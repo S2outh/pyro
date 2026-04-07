@@ -1,0 +1,14 @@
+[target.thumbv6m-none-eabi]
+runner = "./runner.sh"
+
+rustflags = [
+  "-C", "link-arg=-Tlink.x", # linker file
+  "-C", "link-arg=--nmagic", # no std memory layout
+  "-C", "link-arg=-Tdefmt.x", # add defmt
+]
+
+[build]
+target = "thumbv6m-none-eabi"
+
+[net]
+git-fetch-with-cli = true
