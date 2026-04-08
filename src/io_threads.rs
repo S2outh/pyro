@@ -10,7 +10,7 @@ use south_common::{
     chell::{ChellDefinition, ChellValue}, definitions::internal_msgs, types::{Telecommand, Timesync}
 };
 
-use crate::{LowerSensorTMContainer, TCSender, TMReceiver};
+use crate::{PyroTMContainer, TCSender, TMReceiver};
 
 /// Request a timesync frame every N seconds
 const TIMESYNC_REQ_ID: u8 = 3;
@@ -25,7 +25,7 @@ fn gen_timesync_frame() -> FdFrame {
     frame
 }
 
-fn gen_tm_frame(container: LowerSensorTMContainer) -> FdFrame {
+fn gen_tm_frame(container: PyroTMContainer) -> FdFrame {
     FdFrame::new_standard(container.id(), container.fd_bytes()).unwrap()
 }
 

@@ -4,23 +4,18 @@
 #![feature(type_alias_impl_trait)]
 #![feature(iter_collect_into)]
 #![feature(iterator_try_collect)]
+//#![feature(generic_const_exprs)]
 
 mod io_threads;
-mod adc;
+mod control_loop;
+// mod adc;
 
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, bind_interrupts,
-    can::{
+    Config, bind_interrupts, can::{
         self, CanConfigurator, RxFdBuf, TxFdBuf,
-    },
-    exti::InterruptHandler,
-    gpio::{Level, Output, Speed},
-    interrupt::typelevel::EXTI4_15,
-    peripherals::{FDCAN1, IWDG},
-    rcc::{self, mux::Fdcansel},
-    wdg::IndependentWatchdog,
+    }, exti::InterruptHandler, gpio::{Level, Output, Speed}, interrupt::typelevel::EXTI4_15, peripherals::{FDCAN1, IWDG}, rcc::{self, mux::Fdcansel}, wdg::IndependentWatchdog
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
@@ -28,11 +23,11 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 use south_common::{
-    configs::can_config::CanPeriphConfig, definitions::{internal_msgs, telemetry::lower_sensor as tm}, chell::{ChellDefinition, fd_compat_chell_union}, types::Telecommand
+    configs::can_config::CanPeriphConfig, definitions::{internal_msgs, telemetry::pyro as tm}, chell::{ChellDefinition, fd_compat_chell_union}, types::Telecommand
 };
 use static_cell::StaticCell;
 
-use crate::io_threads::{can_receiver_thread, can_sender_thread};
+use crate::{control_loop::ControlLoop, io_threads::{can_receiver_thread, can_sender_thread}};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -74,14 +69,14 @@ const WATCHDOG_TIMEOUT_US: u32 = 300_000;
 const WATCHDOG_PETTING_INTERVAL_US: u32 = WATCHDOG_TIMEOUT_US / 2;
 
 // Telemtry container
-type LowerSensorTMContainer = fd_compat_chell_union!(tm);
+type PyroTMContainer = fd_compat_chell_union!(tm);
 
 const TM_CHANNEL_BUF_SIZE: usize = 5;
 const CMD_CHANNEL_BUF_SIZE: usize = 5;
 
-type TMSender = Sender<'static, ThreadModeRawMutex, LowerSensorTMContainer, TM_CHANNEL_BUF_SIZE>;
-type TMReceiver = Receiver<'static, ThreadModeRawMutex, LowerSensorTMContainer, TM_CHANNEL_BUF_SIZE>;
-static TMC: StaticCell<Channel<ThreadModeRawMutex, LowerSensorTMContainer, TM_CHANNEL_BUF_SIZE>> =
+type TMSender = Sender<'static, ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>;
+type TMReceiver = Receiver<'static, ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>;
+static TMC: StaticCell<Channel<ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>> =
     StaticCell::new();
 type TCSender = Sender<'static, ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>;
 type TCReceiver = Receiver<'static, ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>;
@@ -147,33 +142,64 @@ async fn main(spawner: Spawner) {
         RX_BUF.init(RxFdBuf::<RX_BUF_SIZE>::new()),
     );
 
+    // Pyro channel configuration
+    let safe_a = Output::new(p.PB9, Level::Low, Speed::Low);
+    let fire_a = Output::new(p.PB4, Level::Low, Speed::Low);
+
+    let safe_b = Output::new(p.PB8, Level::Low, Speed::Low);
+    let fire_b = Output::new(p.PB5, Level::Low, Speed::Low);
+
     // Adc configuration
-    let safe_a = Output::new(p.PA10, Level::Low, Speed::Low);
-    let fire_a = Output::new(p.PB3, Level::Low, Speed::Low);
+    // let adc_periph = Adc::new(p.ADC1);
 
-    let safe_b = Output::new(p.PB5, Level::Low, Speed::Low);
-    let fire_b = Output::new(p.PB4, Level::Low, Speed::Low);
+    // let temp_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
 
-    let adc_periph = Adc::new(p.ADC1);
+    // let out_a_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
+    // let out_b_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
 
-    let temp_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
-    let out_a_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
-    let out_b_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
-    let current_test_watch = TW.init(Watch::new());
+    // let bat_a_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
+    // let bat_b_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
+    // 
+    // let out_a_channel = AdcCtrlChannel::new(
+    //     p.PA1.degrade_adc(),
+    //     out_a_watch.sender().as_dyn(),
+    //     adc::conversion::calculate_voltage_10mv
+    // );
+
+    // let out_b_channel = AdcCtrlChannel::new(
+    //     p.PA0.degrade_adc(),
+    //     out_b_watch.sender().as_dyn(),
+    //     adc::conversion::calculate_voltage_10mv
+    // );
+
+    // let bat_a_channel = AdcCtrlChannel::new(
+    //     p.PA3.degrade_adc(),
+    //     bat_a_watch.sender().as_dyn(),
+    //     adc::conversion::calculate_voltage_10mv
+    // );
+
+    // let bat_b_channel = AdcCtrlChannel::new(
+    //     p.PA2.degrade_adc(),
+    //     bat_b_watch.sender().as_dyn(),
+    //     adc::conversion::calculate_voltage_10mv
+    // );
+
+    // let mut adc: AdcCtrl<'_, '_, _, 6> = AdcCtrl::new(
+    //     adc_periph,
+    //     p.DMA1_CH1,
+    //     temp_watch.sender().as_dyn(),
+    //     [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel]
+    // );
     
-    let out_a_channel = AdcCtrlChannel::new(
-        p.PA0.degrade_adc(),
-        out_a_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv
+    // Control loop setup
+    let control_loop = ControlLoop::spawn(
+        cmd_channel.receiver(),
+        tm_channel.sender(),
+        safe_a,
+        fire_a,
+        safe_b,
+        fire_b
     );
-
-    let out_b_channel = AdcCtrlChannel::new(
-        p.PA1.degrade_adc(),
-        out_b_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv
-    );
-
-    let mut adc: AdcCtrl<'_, '_, _, 4> = AdcCtrl::new(adc_periph, p.DMA1_CH1, temp_watch.sender().as_dyn(), [out_a_channel, out_b_channel]);
 
     // Thread spawning
     watchdog.unleash();
@@ -181,6 +207,7 @@ async fn main(spawner: Spawner) {
 
     Timer::after_millis(STARTUP_DELAY).await;
 
+    spawner.spawn(control_loop::ctrl_thread(control_loop).unwrap());
     spawner.spawn(can_sender_thread(can_interface.writer(), tm_channel.receiver()).unwrap());
     spawner.spawn(can_receiver_thread(can_interface.reader(), cmd_channel.sender()).unwrap());
 
