@@ -1034,7 +1034,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "south-common"
 version = "4.0.0"
-source = "git+ssh://git@github.com/S2outh/south-common.git#c0dec0aec05ba2916462e9a2edc04a2b77221350"
+source = "git+ssh://git@github.com/S2outh/south-common.git#f9483cc2c83ab82f45f6d6dd55689127ffaf35cc"
 dependencies = [
  "bitflags 2.11.0",
  "chell",

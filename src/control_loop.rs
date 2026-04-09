@@ -10,12 +10,6 @@ use crate::{PyroTMContainer, TCReceiver, TMSender};
 
 const CTRL_LOOP_TM_INTERVAL: Duration = Duration::from_millis(500);
 
-// control loop task
-#[embassy_executor::task]
-pub async fn ctrl_thread(mut control_loop: ControlLoop) -> ! {
-    control_loop.run().await
-}
-
 pub struct ControlLoop {
     cmd_receiver: TCReceiver,
     tm_sender: TMSender,

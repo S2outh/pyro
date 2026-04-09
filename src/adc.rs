@@ -1,48 +1,49 @@
 mod factory_calibrated_values;
 mod util;
 
-use embassy_time::{Duration, Ticker};
+use core::array;
+
+use heapless::Vec;
 use util::Sortable;
 
 use embassy_stm32::{
     Peri,
-    adc::{Adc, AdcChannel, AnyAdcChannel, RxDma, SampleTime},
-    peripherals::{ADC1, DMA1_CH1},
+    adc::{Adc, AdcChannel, AnyAdcChannel, Exten, Instance, RegularTrigger, RingBufferedAdc, RxDma, SampleTime},
+    dma::InterruptHandler,
+    interrupt::typelevel::Binding,
+    pac
 };
 use embassy_sync::watch::DynSender;
-use heapless::Vec;
 
-// Adc reading task
-#[embassy_executor::task]
-pub async fn adc_thread(mut adc: AdcCtrl<'static, 'static, DMA1_CH1, 4>) {
-    const ADC_LOOP_LEN: Duration = Duration::from_millis(50);
-    let mut ticker = Ticker::every(ADC_LOOP_LEN);
-    loop {
-        adc.run().await;
-        ticker.next().await;
-    }
-}
-
-pub struct AdcCtrlChannel<'a> {
-    channel: AnyAdcChannel<ADC1>,
+pub struct AdcCtrlChannel<'a, T: Instance> {
+    channel: AnyAdcChannel<'a, T>,
     sender: Option<DynSender<'a, i16>>,
     conversion_func: fn(u16, u16) -> i16,
 }
-impl<'a> AdcCtrlChannel<'a> {
+impl<'a, T: Instance> AdcCtrlChannel<'a, T> {
     pub fn new(
-        channel: AnyAdcChannel<ADC1>,
+        channel: AnyAdcChannel<'a, T>,
         sender: DynSender<'a, i16>,
         conversion_func: fn(u16, u16) -> i16
     ) -> Self {
         Self { channel, sender: Some(sender), conversion_func }
     }
     fn new_ref(
-        channel: AnyAdcChannel<ADC1>,
+        channel: AnyAdcChannel<'a, T>,
     ) -> Self {
         Self { channel, sender: None, conversion_func: |_,_|{0} }
     }
 }
 
+struct AdcChannelCtx<'a> {
+    sender: Option<DynSender<'a, i16>>,
+    conversion_func: fn(u16, u16) -> i16,
+}
+impl<'a> AdcChannelCtx<'a> {
+    fn from(value: &mut AdcCtrlChannel<'a, impl Instance>) -> Self {
+        Self { sender: value.sender.take(), conversion_func: value.conversion_func }
+    }
+}
 
 pub mod conversion {
     use super::factory_calibrated_values::FactoryCalibratedValues;
@@ -90,26 +91,25 @@ pub mod conversion {
     }
 }
 
-pub struct AdcCtrl<'a, 'd, D: RxDma<ADC1>, const N: usize> {
-    adc: Adc<'d, ADC1>,
-    dma_channel: Peri<'d, D>,
+pub struct AdcCtrl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES_SZE: usize> {
+    rb_adc: RingBufferedAdc<'a, T>,
+    channel_ctx: [AdcChannelCtx<'c>; CHANNELS],
     ref_channel_idx: usize,
-    // adc channels
-    channels: Vec<AdcCtrlChannel<'a>, N>,
 }
 
-impl<'a, 'd, D: RxDma<ADC1>, const N: usize> AdcCtrl<'a, 'd, D, N> {
-    pub fn new(
-        mut adc: Adc<'d, ADC1>,
-        dma_channel: Peri<'d, D>,
-        temp_sender: DynSender<'a, i16>,
-        external_channels: [AdcCtrlChannel<'a>; N - 2],
+impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES_SZE: usize> AdcCtrl<'a, 'c, T, CHANNELS, MES_SZE> {
+    pub fn new<D: RxDma<T>>(
+        adc: Adc<'a, T>,
+        dma_channel: Peri<'a, D>,
+        dma_buffer: &'a mut [u16],
+        irq: impl Binding<D::Interrupt, InterruptHandler<D>> + 'a,
+        trigger: impl RegularTrigger<T>,
+        edge: Exten,
+        sample_time: SampleTime,
+        temp_sender: DynSender<'c, i16>,
+        external_channels: [AdcCtrlChannel<'c, T>; CHANNELS - 2],
     ) -> Self {
-        adc.set_resolution(embassy_stm32::adc::Resolution::BITS12);
-        // 16x oversampling
-        adc.set_oversampling_ratio(0x03); // 2^n oversampling steps: 2^3 = 16
-        adc.set_oversampling_shift(0x04); // right shift of oversampling reg, usually n+1: avg = sum >> n+1
-        adc.oversampling_enable(true); // enable oversampling feature
+        assert_eq!(MES_SZE * 2, dma_buffer.len());
 
         let temp_channel = AdcCtrlChannel::new(
             adc.enable_temperature().degrade_adc(),
@@ -117,7 +117,7 @@ impl<'a, 'd, D: RxDma<ADC1>, const N: usize> AdcCtrl<'a, 'd, D, N> {
             conversion::calculate_temperature_tenth_deg,
         );
         let ref_channel = AdcCtrlChannel::new_ref(adc.enable_vrefint().degrade_adc());
-        let mut channels: Vec<AdcCtrlChannel<'a>, N> = external_channels.into_iter().collect();
+        let mut channels: Vec<AdcCtrlChannel<'c, T>, CHANNELS> = external_channels.into_iter().collect();
         channels.push(temp_channel).ok();
         channels.push(ref_channel).ok();
         channels.sort_by(|c1, c2| {
@@ -127,38 +127,43 @@ impl<'a, 'd, D: RxDma<ADC1>, const N: usize> AdcCtrl<'a, 'd, D, N> {
         });
         let ref_channel_idx = channels.iter().position(|c| c.sender.is_none()).unwrap();
 
+        let (channel_ctx, sequence): (Vec<_, CHANNELS>, Vec<_, CHANNELS>) =
+            channels
+            .into_iter()
+            .map(|mut c| (AdcChannelCtx::from(&mut c), (c.channel, sample_time)))
+            .unzip();
+        
+        let rb_adc = adc.into_ring_buffered(dma_channel, dma_buffer, irq, sequence.into_iter(), trigger, edge);
+        let channel_ctx = channel_ctx.into_array().unwrap_or_else(|_| unreachable!());
+
         Self {
-            adc,
-            dma_channel,
+            rb_adc,
             ref_channel_idx,
-            channels,
+            channel_ctx,
         }
     }
 
-    async fn measure(&mut self) -> Vec<u16, N> {
-        let mut measurements = [0u16; N];
-        let sequence = self
-            .channels
-            .iter_mut()
-            .map(|c| (&mut c.channel, SampleTime::CYCLES160_5));
+    async fn measure(&mut self) -> [u16; CHANNELS] {
+        let mut measurements = [0u16; MES_SZE];
 
-        self.adc
-            .read(self.dma_channel.reborrow(), sequence, &mut measurements)
-            .await;
+        self.rb_adc
+            .read(&mut measurements)
+            .await.unwrap_or_else(|_| panic!("adc overrun"));
 
-        Vec::from_array(measurements)
+        measurements[MES_SZE-CHANNELS..].try_into().unwrap()
     }
-    fn convert(&self, values: Vec<u16, N>) -> Vec<i16, N> {
+    fn convert(&self, values: [u16; CHANNELS]) -> [i16; CHANNELS] {
         let v_ref_measurement: u16 = values[self.ref_channel_idx];
 
-        self.channels
+        let mut iter = self.channel_ctx
             .iter()
             .zip(values)
-            .map(|(c, v)| (c.conversion_func)(v, v_ref_measurement))
-            .collect()
+            .map(|(c, v)| (c.conversion_func)(v, v_ref_measurement));
+        
+        array::from_fn(|_| iter.next().unwrap())
     }
-    fn send(&self, values: Vec<i16, N>) {
-        self.channels
+    fn send(&self, values: [i16; CHANNELS]) {
+        self.channel_ctx
             .iter()
             .zip(values)
             .for_each(|(c, v)| 
@@ -168,10 +173,14 @@ impl<'a, 'd, D: RxDma<ADC1>, const N: usize> AdcCtrl<'a, 'd, D, N> {
             );
     }
 
-    pub async fn run(&mut self) {
-        let raw_values = self.measure().await;
-        let converted_values = self.convert(raw_values);
-        self.send(converted_values);
+    pub async fn run(&mut self) -> ! {
+        self.rb_adc.start();
+
+        loop {
+            let raw_values = self.measure().await;
+            let converted_values = self.convert(raw_values);
+            self.send(converted_values);
+        }
     }
 }
 

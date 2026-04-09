@@ -4,22 +4,22 @@
 #![feature(type_alias_impl_trait)]
 #![feature(iter_collect_into)]
 #![feature(iterator_try_collect)]
-//#![feature(generic_const_exprs)]
+#![feature(generic_const_exprs)]
 
 mod io_threads;
 mod control_loop;
-// mod adc;
+mod adc;
 
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, bind_interrupts, can::{
+    Config, adc::{Adc, AdcChannel, AdcConfig, CONTINUOUS, Exten, SampleTime}, bind_interrupts, can::{
         self, CanConfigurator, RxFdBuf, TxFdBuf,
-    }, exti::InterruptHandler, gpio::{Level, Output, Speed}, interrupt::typelevel::EXTI4_15, peripherals::{FDCAN1, IWDG}, rcc::{self, mux::Fdcansel}, wdg::IndependentWatchdog
+    }, dma, gpio::{Level, Output, Speed}, peripherals::{ADC1, DMA1_CH1, FDCAN1, IWDG}, rcc::{self, mux::{Adcsel, Fdcansel}}, wdg::IndependentWatchdog
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
-    channel::{Channel, Receiver, Sender},
+    channel::{Channel, Receiver, Sender}, watch::Watch,
 };
 use embassy_time::Timer;
 use south_common::{
@@ -27,38 +27,41 @@ use south_common::{
 };
 use static_cell::StaticCell;
 
-use crate::{control_loop::ControlLoop, io_threads::{can_receiver_thread, can_sender_thread}};
+use crate::{adc::{AdcCtrl, AdcCtrlChannel}, control_loop::ControlLoop, io_threads::{can_receiver_thread, can_sender_thread}};
 
 use {defmt_rtt as _, panic_probe as _};
 
 // bind interrupts
 bind_interrupts!(struct Irqs {
-    EXTI4_15 => InterruptHandler<EXTI4_15>;
-
     TIM16_FDCAN_IT0 => can::IT0InterruptHandler<FDCAN1>;
     TIM17_FDCAN_IT1 => can::IT1InterruptHandler<FDCAN1>;
 
     // TIM16_FDCAN_IT0 => can::IT0InterruptHandler<FDCAN2>;
     // TIM17_FDCAN_IT1 => can::IT1InterruptHandler<FDCAN2>;
+
+    // Adc dma stream
+    DMA1_CHANNEL1 => dma::InterruptHandler<DMA1_CH1>;
 });
 
 /// config rcc for higher sysclock and fdcan periph clock to make sure
 /// all messages can be received without package drop
 fn get_rcc_config() -> rcc::Config {
     let mut rcc_config = rcc::Config::default();
+    // 16 MHz
     rcc_config.hsi = Some(rcc::Hsi {
         sys_div: rcc::HsiSysDiv::DIV1,
     });
-    rcc_config.sys = rcc::Sysclk::PLL1_R;
     rcc_config.pll = Some(rcc::Pll {
-        source: rcc::PllSource::HSI,
-        prediv: rcc::PllPreDiv::DIV1,
-        mul: rcc::PllMul::MUL8,
+        source: rcc::PllSource::HSI, // 16 MHz
+        prediv: rcc::PllPreDiv::DIV1, // 16 MHz
+        mul: rcc::PllMul::MUL8, // 128 MHz
         divp: None,
-        divq: Some(rcc::PllQDiv::DIV2),
-        divr: Some(rcc::PllRDiv::DIV2),
+        divq: Some(rcc::PllQDiv::DIV2), // 64 MHz
+        divr: Some(rcc::PllRDiv::DIV2), // 64 MHz
     });
-    rcc_config.mux.fdcansel = Fdcansel::PLL1_Q;
+    rcc_config.sys = rcc::Sysclk::PLL1_R; // 64 MHz
+    rcc_config.mux.fdcansel = Fdcansel::PLL1_Q; // 64 MHz
+    rcc_config.mux.adcsel = Adcsel::HSI; // 16 MHz
     rcc_config
 }
 
@@ -67,6 +70,11 @@ const STARTUP_DELAY: u64 = 300;
 
 const WATCHDOG_TIMEOUT_US: u32 = 300_000;
 const WATCHDOG_PETTING_INTERVAL_US: u32 = WATCHDOG_TIMEOUT_US / 2;
+
+// adc buffer
+const ADC_NUM_CHANNELS: usize = 6;
+const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 2; // At least two times num_channels
+static ADC_BUF: StaticCell<[u16; ADC_BUF_SIZE]> = StaticCell::new();
 
 // Telemtry container
 type PyroTMContainer = fd_compat_chell_union!(tm);
@@ -78,6 +86,7 @@ type TMSender = Sender<'static, ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_
 type TMReceiver = Receiver<'static, ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>;
 static TMC: StaticCell<Channel<ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>> =
     StaticCell::new();
+
 type TCSender = Sender<'static, ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>;
 type TCReceiver = Receiver<'static, ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>;
 static CMDC: StaticCell<Channel<ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>> =
@@ -90,12 +99,31 @@ const TX_BUF_SIZE: usize = 64;
 static RX_BUF: StaticCell<RxFdBuf<RX_BUF_SIZE>> = StaticCell::new();
 static TX_BUF: StaticCell<TxFdBuf<TX_BUF_SIZE>> = StaticCell::new();
 
+// ADC watch channels
+static TEMP_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
+static OUT_A_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
+static OUT_B_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
+static BAT_A_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
+static BAT_B_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
+
 #[embassy_executor::task]
 async fn petter(mut watchdog: IndependentWatchdog<'static, IWDG>) {
     loop {
         watchdog.pet();
         Timer::after_micros(WATCHDOG_PETTING_INTERVAL_US.into()).await;
     }
+}
+
+// Adc running task
+#[embassy_executor::task]
+pub async fn adc_thread(mut adc: AdcCtrl<'static, 'static, ADC1, ADC_NUM_CHANNELS, {ADC_BUF_SIZE / 2}>) -> ! {
+    adc.run().await
+}
+
+// control loop task
+#[embassy_executor::task]
+pub async fn ctrl_thread(mut control_loop: ControlLoop) -> ! {
+    control_loop.run().await
 }
 
 #[embassy_executor::main]
@@ -150,46 +178,64 @@ async fn main(spawner: Spawner) {
     let fire_b = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Adc configuration
-    // let adc_periph = Adc::new(p.ADC1);
+    //
+    // cycle num per channel = (sample_time + conversion_time(fixed by resolution)) * oversampeling
+    // = (160.5 + 12.5) * 256 = 44288 cycles.
+    // cycle time per channel = cycle num / adc clock = 44288 / 16_000_000 = 2.768 ms
+    // total cycle time = cycle time per channel * number of channels = 2.768 ms * 6 = 16.608 ms
+    let mut adc_config = AdcConfig::default();
+    adc_config.resolution = Some(embassy_stm32::adc::Resolution::BITS12);
+    // 16x oversampling
+    adc_config.oversampling_ratio = Some(embassy_stm32::adc::Ovsr::MUL256); // 256 oversampling steps
+    adc_config.oversampling_shift = Some(embassy_stm32::adc::Ovss::SHIFT8); // right shift of oversampling reg, usually n+1: avg = sum >> n+1
+    adc_config.oversampling_enable = Some(true); // enable oversampling feature
+    let sample_time = SampleTime::CYCLES160_5;
 
-    // let temp_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
+    let adc_periph = Adc::new_with_config(p.ADC1, adc_config);
 
-    // let out_a_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
-    // let out_b_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
+    let temp_watch = TEMP_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
 
-    // let bat_a_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
-    // let bat_b_watch = Watch::<ThreadModeRawMutex, i16, 1>::new();
-    // 
-    // let out_a_channel = AdcCtrlChannel::new(
-    //     p.PA1.degrade_adc(),
-    //     out_a_watch.sender().as_dyn(),
-    //     adc::conversion::calculate_voltage_10mv
-    // );
+    let out_a_watch = OUT_A_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
+    let out_b_watch = OUT_B_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
 
-    // let out_b_channel = AdcCtrlChannel::new(
-    //     p.PA0.degrade_adc(),
-    //     out_b_watch.sender().as_dyn(),
-    //     adc::conversion::calculate_voltage_10mv
-    // );
+    let bat_a_watch = BAT_A_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
+    let bat_b_watch = BAT_B_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
+    
+    let out_a_channel = AdcCtrlChannel::new(
+        p.PA1.degrade_adc(),
+        out_a_watch.sender().as_dyn(),
+        adc::conversion::calculate_voltage_10mv
+    );
 
-    // let bat_a_channel = AdcCtrlChannel::new(
-    //     p.PA3.degrade_adc(),
-    //     bat_a_watch.sender().as_dyn(),
-    //     adc::conversion::calculate_voltage_10mv
-    // );
+    let out_b_channel = AdcCtrlChannel::new(
+        p.PA0.degrade_adc(),
+        out_b_watch.sender().as_dyn(),
+        adc::conversion::calculate_voltage_10mv
+    );
 
-    // let bat_b_channel = AdcCtrlChannel::new(
-    //     p.PA2.degrade_adc(),
-    //     bat_b_watch.sender().as_dyn(),
-    //     adc::conversion::calculate_voltage_10mv
-    // );
+    let bat_a_channel = AdcCtrlChannel::new(
+        p.PA3.degrade_adc(),
+        bat_a_watch.sender().as_dyn(),
+        adc::conversion::calculate_voltage_10mv
+    );
 
-    // let mut adc: AdcCtrl<'_, '_, _, 6> = AdcCtrl::new(
-    //     adc_periph,
-    //     p.DMA1_CH1,
-    //     temp_watch.sender().as_dyn(),
-    //     [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel]
-    // );
+    let bat_b_channel = AdcCtrlChannel::new(
+        p.PA2.degrade_adc(),
+        bat_b_watch.sender().as_dyn(),
+        adc::conversion::calculate_voltage_10mv
+    );
+
+    let adc: AdcCtrl<'_, '_, _, ADC_NUM_CHANNELS, {ADC_BUF_SIZE / 2}> = AdcCtrl::new(
+        adc_periph,
+        p.DMA1_CH1,
+        ADC_BUF.init([0; _]),
+        Irqs,
+        CONTINUOUS,
+        Exten::RISING_EDGE,
+        sample_time,
+        temp_watch.sender().as_dyn(),
+        [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel]
+    );
     
     // Control loop setup
     let control_loop = ControlLoop::spawn(
@@ -207,7 +253,8 @@ async fn main(spawner: Spawner) {
 
     Timer::after_millis(STARTUP_DELAY).await;
 
-    spawner.spawn(control_loop::ctrl_thread(control_loop).unwrap());
+    spawner.spawn(adc_thread(adc).unwrap());
+    spawner.spawn(ctrl_thread(control_loop).unwrap());
     spawner.spawn(can_sender_thread(can_interface.writer(), tm_channel.receiver()).unwrap());
     spawner.spawn(can_receiver_thread(can_interface.reader(), cmd_channel.sender()).unwrap());
 
