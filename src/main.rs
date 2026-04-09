@@ -4,6 +4,7 @@
 #![feature(type_alias_impl_trait)]
 #![feature(iter_collect_into)]
 #![feature(iterator_try_collect)]
+#![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
 mod io_threads;
@@ -19,7 +20,7 @@ use embassy_stm32::{
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
-    channel::{Channel, Receiver, Sender}, watch::Watch,
+    channel::{Channel, Receiver, Sender}, watch::{self, Watch},
 };
 use embassy_time::Timer;
 use south_common::{
@@ -73,7 +74,7 @@ const WATCHDOG_PETTING_INTERVAL_US: u32 = WATCHDOG_TIMEOUT_US / 2;
 
 // adc buffer
 const ADC_NUM_CHANNELS: usize = 6;
-const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 2; // At least two times num_channels
+const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 12; // At least two times num_channels
 static ADC_BUF: StaticCell<[u16; ADC_BUF_SIZE]> = StaticCell::new();
 
 // Telemtry container
@@ -124,6 +125,19 @@ pub async fn adc_thread(mut adc: AdcCtrl<'static, 'static, ADC1, ADC_NUM_CHANNEL
 #[embassy_executor::task]
 pub async fn ctrl_thread(mut control_loop: ControlLoop) -> ! {
     control_loop.run().await
+}
+
+// adc to telem conversion tasks
+#[embassy_executor::task(pool_size = 5)]
+pub async fn adc_telem_thread(
+    tm_sender: TMSender,
+    mut adc_recv: watch::Receiver<'static, ThreadModeRawMutex, i16, 1>,
+    addr: &'static dyn ChellDefinition) {
+    loop {
+        let value = adc_recv.changed().await;
+        let container = PyroTMContainer::new(addr, &value).unwrap();
+        tm_sender.send(container).await;
+    }
 }
 
 #[embassy_executor::main]
@@ -183,6 +197,9 @@ async fn main(spawner: Spawner) {
     // = (160.5 + 12.5) * 256 = 44288 cycles.
     // cycle time per channel = cycle num / adc clock = 44288 / 16_000_000 = 2.768 ms
     // total cycle time = cycle time per channel * number of channels = 2.768 ms * 6 = 16.608 ms
+    // dma triggers when buffer is half full:
+    // trigger = total cycle time * (adc buf size multiplier / 2) = 16.608 * (12 / 2) = 99.648 ms
+    // The adc ctrl loop only reads the last set of values on interrupt
     let mut adc_config = AdcConfig::default();
     adc_config.resolution = Some(embassy_stm32::adc::Resolution::BITS12);
     // 16x oversampling
@@ -257,6 +274,37 @@ async fn main(spawner: Spawner) {
     spawner.spawn(ctrl_thread(control_loop).unwrap());
     spawner.spawn(can_sender_thread(can_interface.writer(), tm_channel.receiver()).unwrap());
     spawner.spawn(can_receiver_thread(can_interface.reader(), cmd_channel.sender()).unwrap());
+
+    // adc telem threads
+    spawner.spawn(adc_telem_thread(
+        tm_channel.sender(),
+        temp_watch.receiver().unwrap(),
+        &tm::InternalTemperature
+    ).unwrap());
+
+    spawner.spawn(adc_telem_thread(
+        tm_channel.sender(),
+        bat_a_watch.receiver().unwrap(),
+        &tm::Bat1Voltage
+    ).unwrap());
+
+    spawner.spawn(adc_telem_thread(
+        tm_channel.sender(),
+        bat_b_watch.receiver().unwrap(),
+        &tm::Bat2Voltage
+    ).unwrap());
+
+    spawner.spawn(adc_telem_thread(
+        tm_channel.sender(),
+        out_a_watch.receiver().unwrap(),
+        &tm::Out1Voltage
+    ).unwrap());
+
+    spawner.spawn(adc_telem_thread(
+        tm_channel.sender(),
+        out_b_watch.receiver().unwrap(),
+        &tm::Out2Voltage
+    ).unwrap());
 
     // wait until all other threads finished (never)
     core::future::pending::<()>().await;

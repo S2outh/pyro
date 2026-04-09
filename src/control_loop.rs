@@ -8,8 +8,6 @@ use south_common::types::pyro::{PyroCommand, StateFlags};
 
 use crate::{PyroTMContainer, TCReceiver, TMSender};
 
-const CTRL_LOOP_TM_INTERVAL: Duration = Duration::from_millis(500);
-
 pub struct ControlLoop {
     cmd_receiver: TCReceiver,
     tm_sender: TMSender,
@@ -97,6 +95,7 @@ impl ControlLoop {
         self.tm_sender.send(container).await;
     }
     pub async fn run(&mut self) -> ! {
+        const CTRL_LOOP_TM_INTERVAL: Duration = Duration::from_millis(500);
         let mut tm_ticker = Ticker::every(CTRL_LOOP_TM_INTERVAL);
 
         loop {
