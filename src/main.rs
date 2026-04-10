@@ -7,28 +7,45 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
-mod io_threads;
-mod control_loop;
 mod adc;
+mod control_loop;
+mod io_threads;
 
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_stm32::{
-    Config, adc::{Adc, AdcChannel, AdcConfig, CONTINUOUS, Exten, SampleTime}, bind_interrupts, can::{
-        self, CanConfigurator, RxFdBuf, TxFdBuf,
-    }, dma, gpio::{Level, Output, Speed}, peripherals::{ADC1, DMA1_CH1, FDCAN1, IWDG}, rcc::{self, mux::{Adcsel, Fdcansel}}, wdg::IndependentWatchdog
+    Config,
+    adc::{Adc, AdcChannel, AdcConfig, CONTINUOUS, Exten, SampleTime},
+    bind_interrupts,
+    can::{self, CanConfigurator, RxFdBuf, TxFdBuf},
+    dma,
+    gpio::{Level, Output, Speed},
+    peripherals::{ADC1, DMA1_CH1, FDCAN1, IWDG},
+    rcc::{
+        self,
+        mux::{Adcsel, Fdcansel},
+    },
+    wdg::IndependentWatchdog,
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
-    channel::{Channel, Receiver, Sender}, watch::{self, Watch},
+    channel::{Channel, Receiver, Sender},
+    watch::{self, Watch},
 };
 use embassy_time::Timer;
 use south_common::{
-    configs::can_config::CanPeriphConfig, definitions::{internal_msgs, telemetry::pyro as tm}, chell::{ChellDefinition, fd_compat_chell_union}, types::Telecommand
+    chell::{ChellDefinition, fd_compat_chell_union},
+    configs::can_config::CanPeriphConfig,
+    definitions::{internal_msgs, telemetry::pyro as tm},
+    types::Telecommand,
 };
 use static_cell::StaticCell;
 
-use crate::{adc::{AdcCtrl, AdcCtrlChannel}, control_loop::ControlLoop, io_threads::{can_receiver_thread, can_sender_thread}};
+use crate::{
+    adc::{AdcCtrl, AdcCtrlChannel},
+    control_loop::ControlLoop,
+    io_threads::{can_receiver_thread, can_sender_thread},
+};
 
 use {defmt_rtt as _, panic_probe as _};
 
@@ -53,16 +70,16 @@ fn get_rcc_config() -> rcc::Config {
         sys_div: rcc::HsiSysDiv::DIV1,
     });
     rcc_config.pll = Some(rcc::Pll {
-        source: rcc::PllSource::HSI, // 16 MHz
-        prediv: rcc::PllPreDiv::DIV1, // 16 MHz
-        mul: rcc::PllMul::MUL8, // 128 MHz
-        divp: None,
-        divq: Some(rcc::PllQDiv::DIV2), // 64 MHz
-        divr: Some(rcc::PllRDiv::DIV2), // 64 MHz
+        source: rcc::PllSource::HSI,     // 16 MHz
+        prediv: rcc::PllPreDiv::DIV1,    // 16 MHz
+        mul: rcc::PllMul::MUL8,          // 128 MHz
+        divp: Some(rcc::PllPDiv::DIV32), // 4 MHz
+        divq: Some(rcc::PllQDiv::DIV2),  // 64 MHz
+        divr: Some(rcc::PllRDiv::DIV2),  // 64 MHz
     });
     rcc_config.sys = rcc::Sysclk::PLL1_R; // 64 MHz
     rcc_config.mux.fdcansel = Fdcansel::PLL1_Q; // 64 MHz
-    rcc_config.mux.adcsel = Adcsel::HSI; // 16 MHz
+    rcc_config.mux.adcsel = Adcsel::PLL1_P; // 4 MHz
     rcc_config
 }
 
@@ -74,7 +91,7 @@ const WATCHDOG_PETTING_INTERVAL_US: u32 = WATCHDOG_TIMEOUT_US / 2;
 
 // adc buffer
 const ADC_NUM_CHANNELS: usize = 6;
-const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 12; // At least two times num_channels
+const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 4; // At least two times num_channels
 static ADC_BUF: StaticCell<[u16; ADC_BUF_SIZE]> = StaticCell::new();
 
 // Telemtry container
@@ -117,7 +134,9 @@ async fn petter(mut watchdog: IndependentWatchdog<'static, IWDG>) {
 
 // Adc running task
 #[embassy_executor::task]
-pub async fn adc_thread(mut adc: AdcCtrl<'static, 'static, ADC1, ADC_NUM_CHANNELS, {ADC_BUF_SIZE / 2}>) -> ! {
+pub async fn adc_thread(
+    mut adc: AdcCtrl<'static, 'static, ADC1, ADC_NUM_CHANNELS, { ADC_BUF_SIZE / 2 }>,
+) -> ! {
     adc.run().await
 }
 
@@ -132,7 +151,8 @@ pub async fn ctrl_thread(mut control_loop: ControlLoop) -> ! {
 pub async fn adc_telem_thread(
     tm_sender: TMSender,
     mut adc_recv: watch::Receiver<'static, ThreadModeRawMutex, i16, 1>,
-    addr: &'static dyn ChellDefinition) {
+    addr: &'static dyn ChellDefinition,
+) {
     loop {
         let value = adc_recv.changed().await;
         let container = PyroTMContainer::new(addr, &value).unwrap();
@@ -145,15 +165,11 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     config.rcc = get_rcc_config();
     let p = embassy_stm32::init(config);
-    
+
     const FW_VERSION: &str = env!("FW_VERSION");
     const FW_HASH: &str = env!("FW_HASH");
 
-    info!(
-        "Launching: FW version={} hash={}",
-        FW_VERSION,
-        FW_HASH
-    );
+    info!("Launching: FW version={} hash={}", FW_VERSION, FW_HASH);
 
     // create independent watchdog
     let mut watchdog = IndependentWatchdog::new(p.IWDG, WATCHDOG_TIMEOUT_US);
@@ -161,7 +177,6 @@ async fn main(spawner: Spawner) {
     // TM channel setup
     let tm_channel = TMC.init(Channel::new());
     let cmd_channel = CMDC.init(Channel::new());
-
 
     // -- CAN configuration
     // can 1 configuration
@@ -171,7 +186,7 @@ async fn main(spawner: Spawner) {
     // can 2 configuration
     // let mut can_configurator =
     //     CanPeriphConfig::new(CanConfigurator::new(p.FDCAN2, p.PB0, p.PB1, Irqs));
-    
+
     let _can_1_standby = Output::new(p.PA10, Level::Low, Speed::Low);
     // let _can_2_standby = Output::new(p.PB2, Level::Low, Speed::Low);
 
@@ -195,10 +210,11 @@ async fn main(spawner: Spawner) {
     //
     // cycle num per channel = (sample_time + conversion_time(fixed by resolution)) * oversampeling
     // = (160.5 + 12.5) * 256 = 44288 cycles.
-    // cycle time per channel = cycle num / adc clock = 44288 / 16_000_000 = 2.768 ms
-    // total cycle time = cycle time per channel * number of channels = 2.768 ms * 6 = 16.608 ms
+    // cycle time per channel = cycle num / adc clock = 44288 / 4_000_000 = 11.072 ms
+    // total cycle time = cycle time per channel * number of channels = 11.072 ms * 6 = 66.432 ms
     // dma triggers when buffer is half full:
-    // trigger = total cycle time * (adc buf size multiplier / 2) = 16.608 * (12 / 2) = 99.648 ms
+    // trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (4 / 2) = 132.864 ms
+    // The adc is in continuous trigger mode and will not pause between reads
     // The adc ctrl loop only reads the last set of values on interrupt
     let mut adc_config = AdcConfig::default();
     adc_config.resolution = Some(embassy_stm32::adc::Resolution::BITS12);
@@ -217,32 +233,32 @@ async fn main(spawner: Spawner) {
 
     let bat_a_watch = BAT_A_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
     let bat_b_watch = BAT_B_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
-    
+
     let out_a_channel = AdcCtrlChannel::new(
         p.PA1.degrade_adc(),
         out_a_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv
+        adc::conversion::calculate_voltage_10mv,
     );
 
     let out_b_channel = AdcCtrlChannel::new(
         p.PA0.degrade_adc(),
         out_b_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv
+        adc::conversion::calculate_voltage_10mv,
     );
 
     let bat_a_channel = AdcCtrlChannel::new(
         p.PA3.degrade_adc(),
         bat_a_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv
+        adc::conversion::calculate_voltage_10mv,
     );
 
     let bat_b_channel = AdcCtrlChannel::new(
         p.PA2.degrade_adc(),
         bat_b_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv
+        adc::conversion::calculate_voltage_10mv,
     );
 
-    let adc: AdcCtrl<'_, '_, _, ADC_NUM_CHANNELS, {ADC_BUF_SIZE / 2}> = AdcCtrl::new(
+    let adc: AdcCtrl<'_, '_, _, ADC_NUM_CHANNELS, { ADC_BUF_SIZE / 2 }> = AdcCtrl::new(
         adc_periph,
         p.DMA1_CH1,
         ADC_BUF.init([0; _]),
@@ -251,9 +267,9 @@ async fn main(spawner: Spawner) {
         Exten::RISING_EDGE,
         sample_time,
         temp_watch.sender().as_dyn(),
-        [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel]
+        [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel],
     );
-    
+
     // Control loop setup
     let control_loop = ControlLoop::spawn(
         cmd_channel.receiver(),
@@ -261,7 +277,7 @@ async fn main(spawner: Spawner) {
         safe_a,
         fire_a,
         safe_b,
-        fire_b
+        fire_b,
     );
 
     // Thread spawning
@@ -276,35 +292,50 @@ async fn main(spawner: Spawner) {
     spawner.spawn(can_receiver_thread(can_interface.reader(), cmd_channel.sender()).unwrap());
 
     // adc telem threads
-    spawner.spawn(adc_telem_thread(
-        tm_channel.sender(),
-        temp_watch.receiver().unwrap(),
-        &tm::InternalTemperature
-    ).unwrap());
+    spawner.spawn(
+        adc_telem_thread(
+            tm_channel.sender(),
+            temp_watch.receiver().unwrap(),
+            &tm::InternalTemperature,
+        )
+        .unwrap(),
+    );
 
-    spawner.spawn(adc_telem_thread(
-        tm_channel.sender(),
-        bat_a_watch.receiver().unwrap(),
-        &tm::Bat1Voltage
-    ).unwrap());
+    spawner.spawn(
+        adc_telem_thread(
+            tm_channel.sender(),
+            bat_a_watch.receiver().unwrap(),
+            &tm::Bat1Voltage,
+        )
+        .unwrap(),
+    );
 
-    spawner.spawn(adc_telem_thread(
-        tm_channel.sender(),
-        bat_b_watch.receiver().unwrap(),
-        &tm::Bat2Voltage
-    ).unwrap());
+    spawner.spawn(
+        adc_telem_thread(
+            tm_channel.sender(),
+            bat_b_watch.receiver().unwrap(),
+            &tm::Bat2Voltage,
+        )
+        .unwrap(),
+    );
 
-    spawner.spawn(adc_telem_thread(
-        tm_channel.sender(),
-        out_a_watch.receiver().unwrap(),
-        &tm::Out1Voltage
-    ).unwrap());
+    spawner.spawn(
+        adc_telem_thread(
+            tm_channel.sender(),
+            out_a_watch.receiver().unwrap(),
+            &tm::Out1Voltage,
+        )
+        .unwrap(),
+    );
 
-    spawner.spawn(adc_telem_thread(
-        tm_channel.sender(),
-        out_b_watch.receiver().unwrap(),
-        &tm::Out2Voltage
-    ).unwrap());
+    spawner.spawn(
+        adc_telem_thread(
+            tm_channel.sender(),
+            out_b_watch.receiver().unwrap(),
+            &tm::Out2Voltage,
+        )
+        .unwrap(),
+    );
 
     // wait until all other threads finished (never)
     core::future::pending::<()>().await;

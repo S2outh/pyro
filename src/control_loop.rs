@@ -14,7 +14,7 @@ pub struct ControlLoop {
     safe_a: Output<'static>,
     fire_a: Output<'static>,
     safe_b: Output<'static>,
-    fire_b: Output<'static>
+    fire_b: Output<'static>,
 }
 
 impl ControlLoop {
@@ -24,7 +24,7 @@ impl ControlLoop {
         safe_a: Output<'static>,
         fire_a: Output<'static>,
         safe_b: Output<'static>,
-        fire_b: Output<'static>
+        fire_b: Output<'static>,
     ) -> Self {
         Self {
             cmd_receiver,
@@ -32,7 +32,7 @@ impl ControlLoop {
             safe_a,
             fire_a,
             safe_b,
-            fire_b
+            fire_b,
         }
     }
 
@@ -41,21 +41,17 @@ impl ControlLoop {
             return;
         };
         match telecommand {
-            PyroCommand::Arm(channel) => {
-                match channel {
-                    0 => self.safe_a.set_low(),
-                    1 => self.safe_b.set_low(),
-                    _ => panic!("temp"),
-                }
-            }
+            PyroCommand::Arm(channel) => match channel {
+                0 => self.safe_a.set_low(),
+                1 => self.safe_b.set_low(),
+                _ => panic!("temp"),
+            },
 
-            PyroCommand::Disarm(channel) => {
-                match channel {
-                    0 => self.safe_a.set_high(),
-                    1 => self.safe_b.set_high(),
-                    _ => panic!("temp"),
-                }
-            }
+            PyroCommand::Disarm(channel) => match channel {
+                0 => self.safe_a.set_high(),
+                1 => self.safe_b.set_high(),
+                _ => panic!("temp"),
+            },
 
             PyroCommand::Fire(channel) => {
                 let pin = match channel {
@@ -71,25 +67,13 @@ impl ControlLoop {
     }
     async fn send_state(&mut self) {
         let mut state_bitmap = StateFlags::empty();
-        state_bitmap.set(
-            StateFlags::SAFE_A,
-            self.safe_a.is_set_low(),
-        );
+        state_bitmap.set(StateFlags::SAFE_A, self.safe_a.is_set_low());
 
-        state_bitmap.set(
-            StateFlags::SAFE_B,
-            self.safe_b.is_set_low(),
-        );
+        state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_low());
 
-        state_bitmap.set(
-            StateFlags::FIRE_A,
-            self.fire_a.is_set_high(),
-        );
+        state_bitmap.set(StateFlags::FIRE_A, self.fire_a.is_set_high());
 
-        state_bitmap.set(
-            StateFlags::FIRE_B,
-            self.fire_b.is_set_high(),
-        );
+        state_bitmap.set(StateFlags::FIRE_B, self.fire_b.is_set_high());
 
         let container = PyroTMContainer::new(&tm::Status, &state_bitmap.bits()).unwrap();
         self.tm_sender.send(container).await;
@@ -99,11 +83,8 @@ impl ControlLoop {
         let mut tm_ticker = Ticker::every(CTRL_LOOP_TM_INTERVAL);
 
         loop {
-            match select(
-                tm_ticker.next(),
-                self.cmd_receiver.receive(),
-            ).await {
-                Either::First(_) => self.send_state().await,
+            match select(tm_ticker.next(), self.cmd_receiver.receive()).await {
+                Either::First(()) => self.send_state().await,
                 Either::Second(cmd) => self.handle_cmd(cmd).await,
             }
         }

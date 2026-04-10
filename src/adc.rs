@@ -8,10 +8,13 @@ use util::Sortable;
 
 use embassy_stm32::{
     Peri,
-    adc::{Adc, AdcChannel, AnyAdcChannel, Exten, Instance, RegularTrigger, RingBufferedAdc, RxDma, SampleTime},
+    adc::{
+        Adc, AdcChannel, AnyAdcChannel, Exten, Instance, RegularTrigger, RingBufferedAdc, RxDma,
+        SampleTime,
+    },
     dma::InterruptHandler,
     interrupt::typelevel::Binding,
-    pac
+    pac,
 };
 use embassy_sync::watch::DynSender;
 
@@ -24,14 +27,20 @@ impl<'a, T: Instance> AdcCtrlChannel<'a, T> {
     pub fn new(
         channel: AnyAdcChannel<'a, T>,
         sender: DynSender<'a, i16>,
-        conversion_func: fn(u16, u16) -> i16
+        conversion_func: fn(u16, u16) -> i16,
     ) -> Self {
-        Self { channel, sender: Some(sender), conversion_func }
+        Self {
+            channel,
+            sender: Some(sender),
+            conversion_func,
+        }
     }
-    fn new_ref(
-        channel: AnyAdcChannel<'a, T>,
-    ) -> Self {
-        Self { channel, sender: None, conversion_func: |_,_|{0} }
+    fn new_ref(channel: AnyAdcChannel<'a, T>) -> Self {
+        Self {
+            channel,
+            sender: None,
+            conversion_func: |_, _| 0,
+        }
     }
 }
 
@@ -41,7 +50,10 @@ struct AdcChannelCtx<'a> {
 }
 impl<'a> AdcChannelCtx<'a> {
     fn from(value: &mut AdcCtrlChannel<'a, impl Instance>) -> Self {
-        Self { sender: value.sender.take(), conversion_func: value.conversion_func }
+        Self {
+            sender: value.sender.take(),
+            conversion_func: value.conversion_func,
+        }
     }
 }
 
@@ -49,7 +61,8 @@ pub mod conversion {
     use super::factory_calibrated_values::FactoryCalibratedValues;
     use embassy_sync::lazy_lock::LazyLock;
 
-    static CALIB: LazyLock<FactoryCalibratedValues> = LazyLock::new(|| FactoryCalibratedValues::new());
+    static CALIB: LazyLock<FactoryCalibratedValues> =
+        LazyLock::new(|| FactoryCalibratedValues::new());
 
     // datasheet reference conditions
     const VREF_CALIB_10MV: i32 = 3_00;
@@ -59,7 +72,7 @@ pub mod conversion {
 
     const RAW_VALUE_RANGE_X100: i32 = 4096_00;
 
-    // == Voltage divider == 
+    // == Voltage divider ==
     const R1_OHM: i32 = 27;
     const R2_OHM: i32 = 100;
 
@@ -91,13 +104,21 @@ pub mod conversion {
     }
 }
 
-pub struct AdcCtrl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES_SZE: usize> {
+pub struct AdcCtrl<
+    'a,
+    'c,
+    T: Instance<Regs = pac::adc::Adc>,
+    const CHANNELS: usize,
+    const MES_SZE: usize,
+> {
     rb_adc: RingBufferedAdc<'a, T>,
     channel_ctx: [AdcChannelCtx<'c>; CHANNELS],
     ref_channel_idx: usize,
 }
 
-impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES_SZE: usize> AdcCtrl<'a, 'c, T, CHANNELS, MES_SZE> {
+impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES_SZE: usize>
+    AdcCtrl<'a, 'c, T, CHANNELS, MES_SZE>
+{
     pub fn new<D: RxDma<T>>(
         adc: Adc<'a, T>,
         dma_channel: Peri<'a, D>,
@@ -109,7 +130,11 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
         temp_sender: DynSender<'c, i16>,
         external_channels: [AdcCtrlChannel<'c, T>; CHANNELS - 2],
     ) -> Self {
-        assert_eq!(MES_SZE * 2, dma_buffer.len());
+        assert_eq!(
+            MES_SZE * 2,
+            dma_buffer.len(),
+            "Measurement buffer shoult be exactly half the size of the DMA buffer"
+        );
 
         let temp_channel = AdcCtrlChannel::new(
             adc.enable_temperature().degrade_adc(),
@@ -117,7 +142,8 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
             conversion::calculate_temperature_tenth_deg,
         );
         let ref_channel = AdcCtrlChannel::new_ref(adc.enable_vrefint().degrade_adc());
-        let mut channels: Vec<AdcCtrlChannel<'c, T>, CHANNELS> = external_channels.into_iter().collect();
+        let mut channels: Vec<AdcCtrlChannel<'c, T>, CHANNELS> =
+            external_channels.into_iter().collect();
         channels.push(temp_channel).ok();
         channels.push(ref_channel).ok();
         channels.sort_by(|c1, c2| {
@@ -127,13 +153,19 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
         });
         let ref_channel_idx = channels.iter().position(|c| c.sender.is_none()).unwrap();
 
-        let (channel_ctx, sequence): (Vec<_, CHANNELS>, Vec<_, CHANNELS>) =
-            channels
+        let (channel_ctx, sequence): (Vec<_, CHANNELS>, Vec<_, CHANNELS>) = channels
             .into_iter()
             .map(|mut c| (AdcChannelCtx::from(&mut c), (c.channel, sample_time)))
             .unzip();
-        
-        let rb_adc = adc.into_ring_buffered(dma_channel, dma_buffer, irq, sequence.into_iter(), trigger, edge);
+
+        let rb_adc = adc.into_ring_buffered(
+            dma_channel,
+            dma_buffer,
+            irq,
+            sequence.into_iter(),
+            trigger,
+            edge,
+        );
         let channel_ctx = channel_ctx.into_array().unwrap_or_else(|_| unreachable!());
 
         Self {
@@ -146,31 +178,30 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
     async fn measure(&mut self) -> [u16; CHANNELS] {
         let mut measurements = [0u16; MES_SZE];
 
-        self.rb_adc
-            .read(&mut measurements)
-            .await.unwrap_or_else(|_| panic!("adc overrun"));
+        if let Err(e) = self.rb_adc.read(&mut measurements).await {
+            defmt::error!("adc error: {}", e);
+            self.rb_adc.clear();
+        }
 
-        measurements[MES_SZE-CHANNELS..].try_into().unwrap()
+        measurements[MES_SZE - CHANNELS..].try_into().unwrap()
     }
     fn convert(&self, values: [u16; CHANNELS]) -> [i16; CHANNELS] {
         let v_ref_measurement: u16 = values[self.ref_channel_idx];
 
-        let mut iter = self.channel_ctx
+        let mut iter = self
+            .channel_ctx
             .iter()
             .zip(values)
             .map(|(c, v)| (c.conversion_func)(v, v_ref_measurement));
-        
+
         array::from_fn(|_| iter.next().unwrap())
     }
     fn send(&self, values: [i16; CHANNELS]) {
-        self.channel_ctx
-            .iter()
-            .zip(values)
-            .for_each(|(c, v)| 
-                if let Some(sender) = c.sender.as_ref() {
-                    sender.send(v)
-                }
-            );
+        self.channel_ctx.iter().zip(values).for_each(|(c, v)| {
+            if let Some(sender) = c.sender.as_ref() {
+                sender.send(v)
+            }
+        });
     }
 
     pub async fn run(&mut self) -> ! {
@@ -183,4 +214,3 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
         }
     }
 }
-
