@@ -218,25 +218,25 @@ async fn main(spawner: Spawner) {
     let out_a_channel = AdcCtrlChannel::new(
         p.PA1.degrade_adc(),
         out_a_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv,
+        adc::conversion::calculate_voltage_mv,
     );
 
     let out_b_channel = AdcCtrlChannel::new(
         p.PA0.degrade_adc(),
         out_b_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv,
+        adc::conversion::calculate_voltage_mv,
     );
 
     let bat_a_channel = AdcCtrlChannel::new(
         p.PA3.degrade_adc(),
         bat_a_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv,
+        adc::conversion::calculate_voltage_mv,
     );
 
     let bat_b_channel = AdcCtrlChannel::new(
         p.PA2.degrade_adc(),
         bat_b_watch.sender().as_dyn(),
-        adc::conversion::calculate_voltage_10mv,
+        adc::conversion::calculate_voltage_mv,
     );
 
     // cycle num per channel = (sample_time + conversion_time(fixed by resolution)) * oversampeling

@@ -69,7 +69,7 @@ pub mod conversion {
     const TS_2_VAL_TENTH_DEG: i32 = 130_0;
     const TS_REL_VAL_TENTH_DEG: i32 = TS_2_VAL_TENTH_DEG - TS_1_VAL_TENTH_DEG;
 
-    const RAW_VALUE_RANGE_MV: i32 = 4096_000;
+    const RAW_VALUE_RANGE: i32 = u16::MAX as i32;
 
     // == Voltage divider ==
     const R1_OHM: i32 = 27;
@@ -94,14 +94,15 @@ pub mod conversion {
         temp_tenth_deg as i16
     }
 
-    pub fn calculate_voltage_10mv(measurement: u16, calib_measurement: u16) -> i16 {
+    pub fn calculate_voltage_mv(measurement: u16, calib_measurement: u16) -> i16 {
         let vref_mv = calculate_vref(calib_measurement);
         let vbat_1_measurement = measurement as i32;
         let voltage_mv =
-            vbat_1_measurement * V_DIVIDER_MULT * vref_mv / RAW_VALUE_RANGE_MV;
+            vbat_1_measurement * V_DIVIDER_MULT * vref_mv / RAW_VALUE_RANGE;
         voltage_mv as i16
     }
 }
+
 pub enum Averaging {
     Samples16,
     Samples32,
