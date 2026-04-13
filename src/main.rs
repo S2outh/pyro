@@ -15,7 +15,7 @@ use defmt::info;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     Config,
-    adc::{Adc, AdcChannel, AdcConfig, CONTINUOUS, Exten, SampleTime},
+    adc::{AdcChannel, Resolution, SampleTime},
     bind_interrupts,
     can::{self, CanConfigurator, RxFdBuf, TxFdBuf},
     dma,
@@ -42,7 +42,7 @@ use south_common::{
 use static_cell::StaticCell;
 
 use crate::{
-    adc::{AdcCtrl, AdcCtrlChannel},
+    adc::{AdcCtrl, AdcCtrlChannel, Averaging},
     control_loop::ControlLoop,
     io_threads::{can_receiver_thread, can_sender_thread},
 };
@@ -207,25 +207,6 @@ async fn main(spawner: Spawner) {
     let fire_b = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Adc configuration
-    //
-    // cycle num per channel = (sample_time + conversion_time(fixed by resolution)) * oversampeling
-    // = (160.5 + 12.5) * 256 = 44288 cycles.
-    // cycle time per channel = cycle num / adc clock = 44288 / 4_000_000 = 11.072 ms
-    // total cycle time = cycle time per channel * number of channels = 11.072 ms * 6 = 66.432 ms
-    // dma triggers when buffer is half full:
-    // trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (4 / 2) = 132.864 ms
-    // The adc is in continuous trigger mode and will not pause between reads
-    // The adc ctrl loop only reads the last set of values on interrupt
-    let mut adc_config = AdcConfig::default();
-    adc_config.resolution = Some(embassy_stm32::adc::Resolution::BITS12);
-    // 16x oversampling
-    adc_config.oversampling_ratio = Some(embassy_stm32::adc::Ovsr::MUL256); // 256 oversampling steps
-    adc_config.oversampling_shift = Some(embassy_stm32::adc::Ovss::SHIFT8); // right shift of oversampling reg, usually n+1: avg = sum >> n+1
-    adc_config.oversampling_enable = Some(true); // enable oversampling feature
-    let sample_time = SampleTime::CYCLES160_5;
-
-    let adc_periph = Adc::new_with_config(p.ADC1, adc_config);
-
     let temp_watch = TEMP_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
 
     let out_a_watch = OUT_A_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
@@ -258,14 +239,23 @@ async fn main(spawner: Spawner) {
         adc::conversion::calculate_voltage_10mv,
     );
 
+    // cycle num per channel = (sample_time + conversion_time(fixed by resolution)) * oversampeling
+    // = (160.5 + 12.5) * 256 = 44288 cycles.
+    // cycle time per channel = cycle num / adc clock = 44288 / 4_000_000 = 11.072 ms
+    // total cycle time = cycle time per channel * number of channels = 11.072 ms * 6 = 66.432 ms
+    // dma triggers when buffer is half full:
+    // trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (4 / 2) = 132.864 ms
+    // The adc is in continuous trigger mode and will not pause between reads
+    // The adc ctrl loop only reads the last set of values on interrupt
+
     let adc: AdcCtrl<'_, '_, _, ADC_NUM_CHANNELS, { ADC_BUF_SIZE / 2 }> = AdcCtrl::new(
-        adc_periph,
+        p.ADC1,
         p.DMA1_CH1,
         ADC_BUF.init([0; _]),
         Irqs,
-        CONTINUOUS,
-        Exten::RISING_EDGE,
-        sample_time,
+        Resolution::BITS12,
+        Averaging::Samples256,
+        SampleTime::CYCLES160_5,
         temp_watch.sender().as_dyn(),
         [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel],
     );

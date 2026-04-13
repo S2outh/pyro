@@ -9,8 +9,7 @@ use util::Sortable;
 use embassy_stm32::{
     Peri,
     adc::{
-        Adc, AdcChannel, AnyAdcChannel, Exten, Instance, RegularTrigger, RingBufferedAdc, RxDma,
-        SampleTime,
+        Adc, AdcChannel, AdcConfig, AnyAdcChannel, CONTINUOUS, Exten, Instance, Ovsr, Ovss, Resolution, RingBufferedAdc, RxDma, SampleTime
     },
     dma::InterruptHandler,
     interrupt::typelevel::Binding,
@@ -65,12 +64,12 @@ pub mod conversion {
         LazyLock::new(|| FactoryCalibratedValues::new());
 
     // datasheet reference conditions
-    const VREF_CALIB_10MV: i32 = 3_00;
+    const VREF_CALIB_MV: i32 = 3_000;
     const TS_1_VAL_TENTH_DEG: i32 = 30_0;
     const TS_2_VAL_TENTH_DEG: i32 = 130_0;
     const TS_REL_VAL_TENTH_DEG: i32 = TS_2_VAL_TENTH_DEG - TS_1_VAL_TENTH_DEG;
 
-    const RAW_VALUE_RANGE_X100: i32 = 4096_00;
+    const RAW_VALUE_RANGE_MV: i32 = 4096_000;
 
     // == Voltage divider ==
     const R1_OHM: i32 = 27;
@@ -79,28 +78,56 @@ pub mod conversion {
     const V_DIVIDER_MULT: i32 = (R1_OHM + R2_OHM) / R2_OHM;
 
     fn calculate_vref(calib_measurement: u16) -> i32 {
-        let vref_measurement_x100 = 100 * calib_measurement as i32;
-        VREF_CALIB_10MV * CALIB.get().v_refint_x100 / vref_measurement_x100
+        let vref_measurement = calib_measurement as i32;
+        VREF_CALIB_MV * CALIB.get().v_refint / vref_measurement
     }
 
     pub fn calculate_temperature_tenth_deg(measurement: u16, calib_measurement: u16) -> i16 {
-        let vref_10mv = calculate_vref(calib_measurement);
-        let temp_measurement_x10 = 10 * measurement as i32;
-        let temp_calibrated_measurement = temp_measurement_x10 * vref_10mv / VREF_CALIB_10MV;
+        let vref_mv = calculate_vref(calib_measurement);
+        let temp_measurement = measurement as i32;
+        let temp_calibrated_measurement = temp_measurement * vref_mv / VREF_CALIB_MV;
         let calib = CALIB.get();
         let temp_tenth_deg = TS_REL_VAL_TENTH_DEG
-            * (temp_calibrated_measurement - calib.ts_cal_1_x10)
-            / calib.ts_cal_rel_x10
+            * (temp_calibrated_measurement - calib.ts_cal_1)
+            / calib.ts_cal_rel
             + TS_1_VAL_TENTH_DEG;
         temp_tenth_deg as i16
     }
 
     pub fn calculate_voltage_10mv(measurement: u16, calib_measurement: u16) -> i16 {
-        let vref_10mv = calculate_vref(calib_measurement);
-        let vbat_1_measurement_x100 = 100 * measurement as i32;
+        let vref_mv = calculate_vref(calib_measurement);
+        let vbat_1_measurement = measurement as i32;
         let voltage_mv =
-            vbat_1_measurement_x100 * V_DIVIDER_MULT * vref_10mv / RAW_VALUE_RANGE_X100;
+            vbat_1_measurement * V_DIVIDER_MULT * vref_mv / RAW_VALUE_RANGE_MV;
         voltage_mv as i16
+    }
+}
+pub enum Averaging {
+    Samples16,
+    Samples32,
+    Samples64,
+    Samples128,
+    Samples256,
+}
+
+impl Averaging {
+    fn oversampeling_ratio(&self) -> Ovsr {
+        match *self {
+            Averaging::Samples16 => Ovsr::MUL16,
+            Averaging::Samples32 => Ovsr::MUL32,
+            Averaging::Samples64 => Ovsr::MUL64,
+            Averaging::Samples128 => Ovsr::MUL128,
+            Averaging::Samples256 => Ovsr::MUL256,
+        }
+    }
+    fn oversampeling_shift(&self) -> Ovss {
+        match *self {
+            Averaging::Samples16 => Ovss::NO_SHIFT,
+            Averaging::Samples32 => Ovss::SHIFT1,
+            Averaging::Samples64 => Ovss::SHIFT2,
+            Averaging::Samples128 => Ovss::SHIFT3,
+            Averaging::Samples256 => Ovss::SHIFT4,
+        }
     }
 }
 
@@ -120,12 +147,12 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
     AdcCtrl<'a, 'c, T, CHANNELS, MES_SZE>
 {
     pub fn new<D: RxDma<T>>(
-        adc: Adc<'a, T>,
+        adc_periph: Peri<'a, T>,
         dma_channel: Peri<'a, D>,
         dma_buffer: &'a mut [u16],
         irq: impl Binding<D::Interrupt, InterruptHandler<D>> + 'a,
-        trigger: impl RegularTrigger<T>,
-        edge: Exten,
+        resolution: Resolution,
+        averaging: Averaging,
         sample_time: SampleTime,
         temp_sender: DynSender<'c, i16>,
         external_channels: [AdcCtrlChannel<'c, T>; CHANNELS - 2],
@@ -135,6 +162,14 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
             dma_buffer.len(),
             "Measurement buffer shoult be exactly half the size of the DMA buffer"
         );
+
+        let mut adc_config = AdcConfig::default();
+        adc_config.resolution = Some(resolution);
+        adc_config.oversampling_ratio = Some(averaging.oversampeling_ratio()); // oversampling steps
+        adc_config.oversampling_shift = Some(averaging.oversampeling_shift()); // right shift of oversampling reg
+        adc_config.oversampling_enable = Some(true); // enable oversampling feature
+        
+        let adc = Adc::new_with_config(adc_periph, adc_config);
 
         let temp_channel = AdcCtrlChannel::new(
             adc.enable_temperature().degrade_adc(),
@@ -163,8 +198,8 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
             dma_buffer,
             irq,
             sequence.into_iter(),
-            trigger,
-            edge,
+            CONTINUOUS,
+            Exten::RISING_EDGE,
         );
         let channel_ctx = channel_ctx.into_array().unwrap_or_else(|_| unreachable!());
 
