@@ -64,9 +64,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.11.0"
+version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
+checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 dependencies = [
  "serde_core",
 ]
@@ -384,7 +384,7 @@ checksum = "486c0622deb5a519fc4d2cb8e3ef324f7568fcdfff201ff8fcab46557d663ceb"
 dependencies = [
  "aligned",
  "bit_field",
- "bitflags 2.11.0",
+ "bitflags 2.11.1",
  "block-device-driver",
  "cfg-if",
  "cortex-m",
@@ -1036,7 +1036,7 @@ name = "south-common"
 version = "4.0.0"
 source = "git+ssh://git@github.com/S2outh/south-common.git#7317d4fcb94b75cb5c4695333b2fb7fc2dfd7c14"
 dependencies = [
- "bitflags 2.11.0",
+ "bitflags 2.11.1",
  "chell",
  "defmt 1.0.1",
  "embassy-stm32",
