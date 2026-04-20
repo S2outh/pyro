@@ -1,5 +1,5 @@
 [package]
-name = "south-sensor-lower"
+name = "south-pyro"
 version = "0.1.0"
 edition = "2024"
 
@@ -25,7 +25,7 @@ embedded-io-async = { version = "0.7.0" }
 embedded-can = "0.4.1"
 static_cell = { version = "2.1.1", features = ["nightly"] }
 
-south-common = { features = ["g0"], git = "ssh://git@github.com/S2outh/south-common.git" }
+south-common = { features = ["g0"], git = "https://github.com/S2outh/south-common.git" }
 
 derive_more = { version = "2.1.1", features = ["constructor"], default-features = false }
 libm = "0.2.16"

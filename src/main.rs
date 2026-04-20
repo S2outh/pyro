@@ -200,10 +200,10 @@ async fn main(spawner: Spawner) {
     );
 
     // Pyro channel configuration
-    let safe_a = Output::new(p.PB9, Level::Low, Speed::Low);
+    let safe_a = Output::new(p.PB9, Level::High, Speed::Low);
     let fire_a = Output::new(p.PB4, Level::Low, Speed::Low);
 
-    let safe_b = Output::new(p.PB8, Level::Low, Speed::Low);
+    let safe_b = Output::new(p.PB8, Level::High, Speed::Low);
     let fire_b = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Adc configuration

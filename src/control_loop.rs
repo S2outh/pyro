@@ -4,7 +4,7 @@ use embassy_time::{Duration, Ticker, Timer};
 use south_common::definitions::telemetry::pyro as tm;
 use south_common::types::Telecommand;
 
-use south_common::types::pyro::{PyroCommand, StateFlags};
+use south_common::types::pyro::{PyroChannel, PyroCommand, StateFlags};
 
 use crate::{PyroTMContainer, TCReceiver, TMSender};
 
@@ -42,22 +42,19 @@ impl ControlLoop {
         };
         match telecommand {
             PyroCommand::Arm(channel) => match channel {
-                0 => self.safe_a.set_low(),
-                1 => self.safe_b.set_low(),
-                _ => panic!("temp"),
+                PyroChannel::Channel1 => self.safe_a.set_low(),
+                PyroChannel::Channel2 => self.safe_b.set_low(),
             },
 
             PyroCommand::Disarm(channel) => match channel {
-                0 => self.safe_a.set_high(),
-                1 => self.safe_b.set_high(),
-                _ => panic!("temp"),
+                PyroChannel::Channel1 => self.safe_a.set_high(),
+                PyroChannel::Channel2 => self.safe_b.set_high(),
             },
 
             PyroCommand::Fire(channel) => {
                 let pin = match channel {
-                    0 => &mut self.fire_a,
-                    1 => &mut self.fire_b,
-                    _ => panic!("temp"),
+                    PyroChannel::Channel1 => &mut self.fire_a,
+                    PyroChannel::Channel2 => &mut self.fire_b,
                 };
                 pin.set_high();
                 Timer::after_micros(100).await;
@@ -69,9 +66,9 @@ impl ControlLoop {
         let mut state_bitmap = StateFlags::empty();
         state_bitmap.set(StateFlags::SAFE_A, self.safe_a.is_set_low());
 
-        state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_low());
-
         state_bitmap.set(StateFlags::FIRE_A, self.fire_a.is_set_high());
+        
+        state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_low());
 
         state_bitmap.set(StateFlags::FIRE_B, self.fire_b.is_set_high());
 
