@@ -15,6 +15,8 @@ pub struct ControlLoop {
     fire_a: Output<'static>,
     safe_b: Output<'static>,
     fire_b: Output<'static>,
+    fired_a: bool,
+    fired_b: bool,
 }
 
 impl ControlLoop {
@@ -33,6 +35,8 @@ impl ControlLoop {
             fire_a,
             safe_b,
             fire_b,
+            fired_a: false,
+            fired_b: false,
         }
     }
 
@@ -52,12 +56,16 @@ impl ControlLoop {
             },
 
             PyroCommand::Fire(channel) => {
+                match channel {
+                    PyroChannel::Channel1 => self.fired_a = true,
+                    PyroChannel::Channel2 => self.fired_b = true,
+                };
                 let pin = match channel {
                     PyroChannel::Channel1 => &mut self.fire_a,
                     PyroChannel::Channel2 => &mut self.fire_b,
                 };
                 pin.set_high();
-                Timer::after_micros(100).await;
+                Timer::after_millis(400).await;
                 pin.set_low();
             }
         }
@@ -66,11 +74,11 @@ impl ControlLoop {
         let mut state_bitmap = StateFlags::empty();
         state_bitmap.set(StateFlags::SAFE_A, self.safe_a.is_set_low());
 
-        state_bitmap.set(StateFlags::FIRE_A, self.fire_a.is_set_high());
+        state_bitmap.set(StateFlags::FIRE_A, self.fired_a);
         
         state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_low());
 
-        state_bitmap.set(StateFlags::FIRE_B, self.fire_b.is_set_high());
+        state_bitmap.set(StateFlags::FIRE_B, self.fired_b);
 
         let container = PyroTMContainer::new(&tm::Status, &state_bitmap.bits()).unwrap();
         self.tm_sender.send(container).await;
