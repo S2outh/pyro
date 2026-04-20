@@ -46,13 +46,13 @@ impl ControlLoop {
         };
         match telecommand {
             PyroCommand::Arm(channel) => match channel {
-                PyroChannel::Channel1 => self.safe_a.set_low(),
-                PyroChannel::Channel2 => self.safe_b.set_low(),
+                PyroChannel::Channel1 => self.safe_a.set_high(),
+                PyroChannel::Channel2 => self.safe_b.set_high(),
             },
 
             PyroCommand::Disarm(channel) => match channel {
-                PyroChannel::Channel1 => self.safe_a.set_high(),
-                PyroChannel::Channel2 => self.safe_b.set_high(),
+                PyroChannel::Channel1 => self.safe_a.set_low(),
+                PyroChannel::Channel2 => self.safe_b.set_low(),
             },
 
             PyroCommand::Fire(channel) => {
@@ -72,11 +72,11 @@ impl ControlLoop {
     }
     async fn send_state(&mut self) {
         let mut state_bitmap = StateFlags::empty();
-        state_bitmap.set(StateFlags::SAFE_A, self.safe_a.is_set_low());
+        state_bitmap.set(StateFlags::SAFE_A, self.safe_a.is_set_high());
 
         state_bitmap.set(StateFlags::FIRE_A, self.fired_a);
         
-        state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_low());
+        state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_high());
 
         state_bitmap.set(StateFlags::FIRE_B, self.fired_b);
 
