@@ -227,7 +227,15 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
             self.rb_adc.clear();
         }
 
-        measurements[MES_SZE - CHANNELS..].try_into().unwrap()
+        let mut averaged = [0u32; CHANNELS];
+        for slice in measurements.chunks_exact(CHANNELS) {
+            for (avg, val) in averaged.iter_mut().zip(slice) {
+                *avg += *val as u32;
+            }
+        }
+
+        let swr_ovs = MES_SZE / CHANNELS;
+        averaged.map(|v| (v / swr_ovs as u32) as u16)
     }
     fn convert(&self, values: [u16; CHANNELS]) -> [i16; CHANNELS] {
         let v_ref_measurement: u16 = values[self.ref_channel_idx];

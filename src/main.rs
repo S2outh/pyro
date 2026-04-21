@@ -91,7 +91,7 @@ const WATCHDOG_PETTING_INTERVAL_US: u32 = WATCHDOG_TIMEOUT_US / 2;
 
 // adc buffer
 const ADC_NUM_CHANNELS: usize = 6;
-const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 4; // At least two times num_channels
+const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 30; // At least two times num_channels
 static ADC_BUF: StaticCell<[u16; ADC_BUF_SIZE]> = StaticCell::new();
 
 // Telemtry container
@@ -244,9 +244,9 @@ async fn main(spawner: Spawner) {
     // cycle time per channel = cycle num / adc clock = 44288 / 4_000_000 = 11.072 ms
     // total cycle time = cycle time per channel * number of channels = 11.072 ms * 6 = 66.432 ms
     // dma triggers when buffer is half full:
-    // trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (4 / 2) = 132.864 ms
+    // trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (30 / 2) = 996.48 ms
     // The adc is in continuous trigger mode and will not pause between reads
-    // The adc ctrl loop only reads the last set of values on interrupt
+    // The adc ctrl loop software averages the values read on interrupt
 
     let adc: AdcCtrl<'_, '_, _, ADC_NUM_CHANNELS, { ADC_BUF_SIZE / 2 }> = AdcCtrl::new(
         p.ADC1,
