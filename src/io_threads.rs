@@ -54,8 +54,8 @@ pub async fn can_sender_thread(mut can_sender: BufferedFdCanSender, tm_channel: 
     }
 }
 
-fn update_time_ref(frame: &FdFrame) {
-    match Timesync::read(frame.data()) {
+fn update_time_ref(envelope: &FdEnvelope) {
+    match Timesync::read(envelope.frame.data()) {
         Ok((_len, timesync_answer)) => {
             if timesync_answer.request_id != TIMESYNC_REQ_ID
                 || timesync_answer.priority >= REQ_ANS_PRIO.load(Ordering::Acquire)
@@ -63,11 +63,11 @@ fn update_time_ref(frame: &FdFrame) {
                 return;
             }
             REQ_ANS_PRIO.store(timesync_answer.priority, Ordering::Release);
-            let transfer_time = Instant::now().as_micros() - REQ_TIME.load(Ordering::Acquire);
-            let time_ref =
-                timesync_answer.unix_time + transfer_time / 2 - Instant::now().as_micros();
-            info!("Time ref is now {}", time_ref);
+            let one_way_delay = (envelope.ts.as_micros() - REQ_TIME.load(Ordering::Acquire))
+                              - (timesync_answer.unix_time_snd - timesync_answer.unix_time_recv);
+            let time_ref = timesync_answer.unix_time_snd + one_way_delay - Instant::now().as_micros();
             TIME_REF.store(time_ref, Ordering::Relaxed);
+            info!("Time ref is now {}", time_ref);
         }
         Err(e) => error!("could not read timesync msg {}", Debug2Format(&e)),
     }
@@ -77,7 +77,7 @@ pub async fn handle_can_msg(envelope: FdEnvelope, tc_channel: TCSender) {
     if let embedded_can::Id::Standard(id) = envelope.frame.id() {
         if let Ok(def) = internal_msgs::from_id(id.as_raw()) {
             if def.as_any().is::<internal_msgs::TimesyncAnswer>() {
-                update_time_ref(&envelope.frame);
+                update_time_ref(&envelope);
             }
             if def.as_any().is::<internal_msgs::Telecommand>() {
                 match Telecommand::read(envelope.frame.data()) {
