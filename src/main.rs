@@ -9,7 +9,7 @@
 
 mod adc;
 mod control_loop;
-mod io_threads;
+mod pyro_channel;
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -29,22 +29,17 @@ use embassy_stm32::{
 };
 use embassy_sync::{
     blocking_mutex::raw::ThreadModeRawMutex,
-    channel::{Channel, Receiver, Sender},
     watch::{self, Watch},
 };
 use embassy_time::Timer;
 use south_common::{
-    chell::{ChellDefinition, fd_compat_chell_union},
-    configs::can_config::CanPeriphConfig,
-    definitions::{internal_msgs, telemetry::pyro as tm},
-    types::Telecommand,
+    chell::ChellDefinition, configs::can_config::CanPeriphConfig, definitions::{internal_msgs, telemetry::pyro as tm}, gen_obdh_types, obdh::EmptyFunc, types::pyro::PyroCommand
 };
 use static_cell::StaticCell;
 
 use crate::{
     adc::{AdcCtrl, AdcCtrlChannel, Averaging},
-    control_loop::ControlLoop,
-    io_threads::{can_receiver_thread, can_sender_thread},
+    control_loop::ControlLoop, pyro_channel::PyroChannel,
 };
 
 use {defmt_rtt as _, panic_probe as _};
@@ -94,28 +89,18 @@ const ADC_NUM_CHANNELS: usize = 6;
 const ADC_BUF_SIZE: usize = ADC_NUM_CHANNELS * 14; // At least two times num_channels
 static ADC_BUF: StaticCell<[u16; ADC_BUF_SIZE]> = StaticCell::new();
 
-// Telemtry container
-type PyroTMContainer = fd_compat_chell_union!(tm);
+// TM container
+gen_obdh_types!(Pyro, tm, cmd => PyroCommand);
 
-const TM_CHANNEL_BUF_SIZE: usize = 5;
-const CMD_CHANNEL_BUF_SIZE: usize = 5;
-
-type TMSender = Sender<'static, ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>;
-type TMReceiver = Receiver<'static, ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>;
-static TMC: StaticCell<Channel<ThreadModeRawMutex, PyroTMContainer, TM_CHANNEL_BUF_SIZE>> =
-    StaticCell::new();
-
-type TCSender = Sender<'static, ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>;
-type TCReceiver = Receiver<'static, ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>;
-static CMDC: StaticCell<Channel<ThreadModeRawMutex, Telecommand, CMD_CHANNEL_BUF_SIZE>> =
-    StaticCell::new();
+// internal messaging channels
+static COM_CHANNELS: PyroComChannels = PyroComChannels::new(6);
 
 // CAN configuration
-const RX_BUF_SIZE: usize = 64;
-const TX_BUF_SIZE: usize = 64;
+const C_RX_BUF_SIZE: usize = 64;
+const C_TX_BUF_SIZE: usize = 64;
 
-static RX_BUF: StaticCell<RxFdBuf<RX_BUF_SIZE>> = StaticCell::new();
-static TX_BUF: StaticCell<TxFdBuf<TX_BUF_SIZE>> = StaticCell::new();
+static C_RX_BUF: StaticCell<RxFdBuf<C_RX_BUF_SIZE>> = StaticCell::new();
+static C_TX_BUF: StaticCell<TxFdBuf<C_TX_BUF_SIZE>> = StaticCell::new();
 
 // ADC watch channels
 static TEMP_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
@@ -130,6 +115,16 @@ async fn petter(mut watchdog: IndependentWatchdog<'static, IWDG>) {
         watchdog.pet();
         Timer::after_micros(WATCHDOG_PETTING_INTERVAL_US.into()).await;
     }
+}
+
+#[embassy_executor::task]
+pub async fn can_receiver_task(mut can_receiver: PyroCanReceiver) -> ! {
+    can_receiver.run().await
+}
+
+#[embassy_executor::task]
+pub async fn can_sender_task(mut can_sender: PyroCanSender) -> ! {
+    can_sender.run().await
 }
 
 // Adc running task
@@ -149,13 +144,13 @@ pub async fn ctrl_thread(mut control_loop: ControlLoop) -> ! {
 // adc to telem conversion tasks
 #[embassy_executor::task(pool_size = 5)]
 pub async fn adc_telem_thread(
-    tm_sender: TMSender,
+    tm_sender: PyroTMSender,
     mut adc_recv: watch::Receiver<'static, ThreadModeRawMutex, i16, 1>,
     addr: &'static dyn ChellDefinition,
 ) {
     loop {
         let value = adc_recv.changed().await;
-        let container = PyroTMContainer::new(addr, &value).unwrap();
+        let container = PyroChellUnion::new(addr, &value).unwrap();
         tm_sender.send(container).await;
     }
 }
@@ -174,10 +169,6 @@ async fn main(spawner: Spawner) {
     // create independent watchdog
     let mut watchdog = IndependentWatchdog::new(p.IWDG, WATCHDOG_TIMEOUT_US);
 
-    // TM channel setup
-    let tm_channel = TMC.init(Channel::new());
-    let cmd_channel = CMDC.init(Channel::new());
-
     // -- CAN configuration
     // can 1 configuration
     let mut can_configurator =
@@ -194,10 +185,15 @@ async fn main(spawner: Spawner) {
         .add_receive_topic(internal_msgs::Telecommand.id())
         .unwrap();
 
-    let can_interface = can_configurator.activate(
-        TX_BUF.init(TxFdBuf::<TX_BUF_SIZE>::new()),
-        RX_BUF.init(RxFdBuf::<RX_BUF_SIZE>::new()),
+    let can_instance = can_configurator.activate(
+        C_TX_BUF.init(TxFdBuf::<C_TX_BUF_SIZE>::new()),
+        C_RX_BUF.init(RxFdBuf::<C_RX_BUF_SIZE>::new()),
     );
+
+    // Setup can sender and receiver runners
+    let can_receiver = PyroCanReceiver::new(can_instance.reader(), &COM_CHANNELS, EmptyFunc);
+
+    let can_sender = PyroCanSender::new(can_instance.writer(), &COM_CHANNELS);
 
     // Pyro channel configuration
     let safe_a = Output::new(p.PB9, Level::Low, Speed::Low);
@@ -264,13 +260,14 @@ async fn main(spawner: Spawner) {
     );
 
     // Control loop setup
+    let pyro_channel_a = PyroChannel::new(safe_a, fire_a);
+    let pyro_channel_b = PyroChannel::new(safe_b, fire_b);
+
     let control_loop = ControlLoop::spawn(
-        cmd_channel.receiver(),
-        tm_channel.sender(),
-        safe_a,
-        fire_a,
-        safe_b,
-        fire_b,
+        COM_CHANNELS.get_tc_receiver(),
+        COM_CHANNELS.get_tm_sender(),
+        pyro_channel_a,
+        pyro_channel_b,
     );
 
     // Thread spawning
@@ -281,13 +278,14 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(adc_thread(adc).unwrap());
     spawner.spawn(ctrl_thread(control_loop).unwrap());
-    spawner.spawn(can_sender_thread(can_interface.writer(), tm_channel.receiver()).unwrap());
-    spawner.spawn(can_receiver_thread(can_interface.reader(), cmd_channel.sender()).unwrap());
+
+    spawner.spawn(can_sender_task(can_sender).unwrap());
+    spawner.spawn(can_receiver_task(can_receiver).unwrap());
 
     // adc telem threads
     spawner.spawn(
         adc_telem_thread(
-            tm_channel.sender(),
+            COM_CHANNELS.get_tm_sender(),
             temp_watch.receiver().unwrap(),
             &tm::InternalTemperature,
         )
@@ -296,7 +294,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            tm_channel.sender(),
+            COM_CHANNELS.get_tm_sender(),
             bat_a_watch.receiver().unwrap(),
             &tm::Bat1Voltage,
         )
@@ -305,7 +303,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            tm_channel.sender(),
+            COM_CHANNELS.get_tm_sender(),
             bat_b_watch.receiver().unwrap(),
             &tm::Bat2Voltage,
         )
@@ -314,7 +312,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            tm_channel.sender(),
+            COM_CHANNELS.get_tm_sender(),
             out_a_watch.receiver().unwrap(),
             &tm::Out1Voltage,
         )
@@ -323,7 +321,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            tm_channel.sender(),
+            COM_CHANNELS.get_tm_sender(),
             out_b_watch.receiver().unwrap(),
             &tm::Out2Voltage,
         )
