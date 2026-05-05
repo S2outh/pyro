@@ -103,11 +103,11 @@ static C_RX_BUF: StaticCell<RxFdBuf<C_RX_BUF_SIZE>> = StaticCell::new();
 static C_TX_BUF: StaticCell<TxFdBuf<C_TX_BUF_SIZE>> = StaticCell::new();
 
 // ADC watch channels
-static TEMP_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
-static OUT_A_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
-static OUT_B_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
-static BAT_A_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
-static BAT_B_WATCH: StaticCell<Watch<ThreadModeRawMutex, i16, 1>> = StaticCell::new();
+static TEMP_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
+static OUT_A_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
+static OUT_B_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
+static BAT_A_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
+static BAT_B_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
 
 #[embassy_executor::task]
 async fn petter(mut watchdog: IndependentWatchdog<'static, IWDG>) {
@@ -203,35 +203,27 @@ async fn main(spawner: Spawner) {
     let fire_b = Output::new(p.PB5, Level::Low, Speed::Low);
 
     // Adc configuration
-    let temp_watch = TEMP_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
-
-    let out_a_watch = OUT_A_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
-    let out_b_watch = OUT_B_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
-
-    let bat_a_watch = BAT_A_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
-    let bat_b_watch = BAT_B_WATCH.init(Watch::<ThreadModeRawMutex, i16, 1>::new());
-
     let out_a_channel = AdcCtrlChannel::new(
         p.PA1.degrade_adc(),
-        out_a_watch.sender().as_dyn(),
+        OUT_A_WATCH.sender().as_dyn(),
         adc::conversion::calculate_out_voltage_mv,
     );
 
     let out_b_channel = AdcCtrlChannel::new(
         p.PA0.degrade_adc(),
-        out_b_watch.sender().as_dyn(),
+        OUT_B_WATCH.sender().as_dyn(),
         adc::conversion::calculate_out_voltage_mv,
     );
 
     let bat_a_channel = AdcCtrlChannel::new(
         p.PA3.degrade_adc(),
-        bat_a_watch.sender().as_dyn(),
+        BAT_A_WATCH.sender().as_dyn(),
         adc::conversion::calculate_bat_voltage_mv,
     );
 
     let bat_b_channel = AdcCtrlChannel::new(
         p.PA2.degrade_adc(),
-        bat_b_watch.sender().as_dyn(),
+        BAT_B_WATCH.sender().as_dyn(),
         adc::conversion::calculate_bat_voltage_mv,
     );
 
@@ -255,7 +247,7 @@ async fn main(spawner: Spawner) {
         Resolution::BITS12,
         Averaging::Samples256,
         SampleTime::CYCLES160_5,
-        temp_watch.sender().as_dyn(),
+        TEMP_WATCH.sender().as_dyn(),
         [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel],
     );
 
@@ -286,7 +278,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(
         adc_telem_thread(
             COM_CHANNELS.get_tm_sender(),
-            temp_watch.receiver().unwrap(),
+            TEMP_WATCH.receiver().unwrap(),
             &tm::InternalTemperature,
         )
         .unwrap(),
@@ -295,7 +287,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(
         adc_telem_thread(
             COM_CHANNELS.get_tm_sender(),
-            bat_a_watch.receiver().unwrap(),
+            BAT_A_WATCH.receiver().unwrap(),
             &tm::Bat1Voltage,
         )
         .unwrap(),
@@ -304,7 +296,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(
         adc_telem_thread(
             COM_CHANNELS.get_tm_sender(),
-            bat_b_watch.receiver().unwrap(),
+            BAT_B_WATCH.receiver().unwrap(),
             &tm::Bat2Voltage,
         )
         .unwrap(),
@@ -313,7 +305,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(
         adc_telem_thread(
             COM_CHANNELS.get_tm_sender(),
-            out_a_watch.receiver().unwrap(),
+            OUT_A_WATCH.receiver().unwrap(),
             &tm::Out1Voltage,
         )
         .unwrap(),
@@ -322,7 +314,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(
         adc_telem_thread(
             COM_CHANNELS.get_tm_sender(),
-            out_b_watch.receiver().unwrap(),
+            OUT_B_WATCH.receiver().unwrap(),
             &tm::Out2Voltage,
         )
         .unwrap(),
