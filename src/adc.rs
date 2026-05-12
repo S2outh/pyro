@@ -64,27 +64,21 @@ pub mod conversion {
         LazyLock::new(|| FactoryCalibratedValues::new());
 
     // datasheet reference conditions
-    const VREF_CALIB_MV: i32 = 3_000;
-    const TS_1_VAL_TENTH_DEG: i32 = 30_0;
-    const TS_2_VAL_TENTH_DEG: i32 = 130_0;
-    const TS_REL_VAL_TENTH_DEG: i32 = TS_2_VAL_TENTH_DEG - TS_1_VAL_TENTH_DEG;
+    const VREF_CALIB_MV: i64 = 3_000;
+    const TS_1_VAL_TENTH_DEG: i64 = 30_0;
+    const TS_2_VAL_TENTH_DEG: i64 = 130_0;
+    const TS_REL_VAL_TENTH_DEG: i64 = TS_2_VAL_TENTH_DEG - TS_1_VAL_TENTH_DEG;
 
-    const RAW_VALUE_RANGE: i32 = u16::MAX as i32;
+    const RAW_VALUE_RANGE: i64 = u16::MAX as i64;
 
-    // == Voltage divider ==
-    const R1_OHM: i32 = 27;
-    const R2_OHM: i32 = 100;
-
-    const V_DIVIDER_MULT: i32 = (R1_OHM + R2_OHM) / R2_OHM;
-
-    fn calculate_vref(calib_measurement: u16) -> i32 {
-        let vref_measurement = calib_measurement as i32;
+    fn calculate_vref(calib_measurement: u16) -> i64 {
+        let vref_measurement = calib_measurement as i64;
         VREF_CALIB_MV * CALIB.get().v_refint / vref_measurement
     }
 
     pub fn calculate_temperature_tenth_deg(measurement: u16, calib_measurement: u16) -> i16 {
         let vref_mv = calculate_vref(calib_measurement);
-        let temp_measurement = measurement as i32;
+        let temp_measurement = measurement as i64;
         let temp_calibrated_measurement = temp_measurement * vref_mv / VREF_CALIB_MV;
         let calib = CALIB.get();
         let temp_tenth_deg = TS_REL_VAL_TENTH_DEG
@@ -94,11 +88,25 @@ pub mod conversion {
         temp_tenth_deg as i16
     }
 
-    pub fn calculate_voltage_mv(measurement: u16, calib_measurement: u16) -> i16 {
+    pub fn calculate_bat_voltage_mv(measurement: u16, calib_measurement: u16) -> i16 {
+        const R1_KOHM: i64 = 680;
+        const R2_KOHM: i64 = 330;
+
         let vref_mv = calculate_vref(calib_measurement);
-        let vbat_1_measurement = measurement as i32;
+        let v_measurement = measurement as i64;
         let voltage_mv =
-            vbat_1_measurement * V_DIVIDER_MULT * vref_mv / RAW_VALUE_RANGE;
+            v_measurement * (R1_KOHM + R2_KOHM) * vref_mv / (R2_KOHM * RAW_VALUE_RANGE);
+        voltage_mv as i16
+    }
+
+    pub fn calculate_out_voltage_mv(measurement: u16, calib_measurement: u16) -> i16 {
+        const R1_KOHM: i64 = 100;
+        const R2_KOHM: i64 = 27;
+
+        let vref_mv = calculate_vref(calib_measurement);
+        let v_measurement = measurement as i64;
+        let voltage_mv =
+            v_measurement * (R1_KOHM + R2_KOHM) * vref_mv / (R2_KOHM * RAW_VALUE_RANGE);
         voltage_mv as i16
     }
 }
@@ -219,7 +227,15 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
             self.rb_adc.clear();
         }
 
-        measurements[MES_SZE - CHANNELS..].try_into().unwrap()
+        let mut averaged = [0u32; CHANNELS];
+        for slice in measurements.chunks_exact(CHANNELS) {
+            for (avg, val) in averaged.iter_mut().zip(slice) {
+                *avg += *val as u32;
+            }
+        }
+
+        let swr_ovs = MES_SZE / CHANNELS;
+        averaged.map(|v| (v / swr_ovs as u32) as u16)
     }
     fn convert(&self, values: [u16; CHANNELS]) -> [i16; CHANNELS] {
         let v_ref_measurement: u16 = values[self.ref_channel_idx];

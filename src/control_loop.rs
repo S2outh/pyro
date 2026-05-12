@@ -1,81 +1,67 @@
 use embassy_futures::select::{Either, select};
-use embassy_stm32::gpio::Output;
 use embassy_time::{Duration, Ticker, Timer};
 use south_common::definitions::telemetry::pyro as tm;
-use south_common::types::Telecommand;
 
-use south_common::types::pyro::{PyroCommand, StateFlags};
+use south_common::types::pyro::{PyroChannel as Ch, PyroCommand, StateFlags};
 
-use crate::{PyroTMContainer, TCReceiver, TMSender};
+use crate::pyro_channel::PyroChannel;
+use crate::{PyroChellUnion, PyroTCReceiver, PyroTMSender};
 
 pub struct ControlLoop {
-    cmd_receiver: TCReceiver,
-    tm_sender: TMSender,
-    safe_a: Output<'static>,
-    fire_a: Output<'static>,
-    safe_b: Output<'static>,
-    fire_b: Output<'static>,
+    cmd_receiver: PyroTCReceiver,
+    tm_sender: PyroTMSender,
+    pyro_channel_a: PyroChannel,
+    pyro_channel_b: PyroChannel,
 }
 
 impl ControlLoop {
     pub fn spawn(
-        cmd_receiver: TCReceiver,
-        tm_sender: TMSender,
-        safe_a: Output<'static>,
-        fire_a: Output<'static>,
-        safe_b: Output<'static>,
-        fire_b: Output<'static>,
+        cmd_receiver: PyroTCReceiver,
+        tm_sender: PyroTMSender,
+        pyro_channel_a: PyroChannel,
+        pyro_channel_b: PyroChannel,
     ) -> Self {
         Self {
             cmd_receiver,
             tm_sender,
-            safe_a,
-            fire_a,
-            safe_b,
-            fire_b,
+            pyro_channel_a,
+            pyro_channel_b,
         }
     }
 
-    async fn handle_cmd(&mut self, cmd: Telecommand) {
-        let Telecommand::Pyro(telecommand) = cmd else {
-            return;
-        };
-        match telecommand {
+    async fn handle_cmd(&mut self, cmd: PyroCommand) {
+        match cmd {
             PyroCommand::Arm(channel) => match channel {
-                0 => self.safe_a.set_low(),
-                1 => self.safe_b.set_low(),
-                _ => panic!("temp"),
+                Ch::Channel1 => self.pyro_channel_a.arm(),
+                Ch::Channel2 => self.pyro_channel_b.arm(),
             },
-
             PyroCommand::Disarm(channel) => match channel {
-                0 => self.safe_a.set_high(),
-                1 => self.safe_b.set_high(),
-                _ => panic!("temp"),
+                Ch::Channel1 => self.pyro_channel_a.disarm(),
+                Ch::Channel2 => self.pyro_channel_b.disarm(),
             },
 
             PyroCommand::Fire(channel) => {
-                let pin = match channel {
-                    0 => &mut self.fire_a,
-                    1 => &mut self.fire_b,
-                    _ => panic!("temp"),
+                let pyro_channel = match channel {
+                    Ch::Channel1 => &mut self.pyro_channel_a,
+                    Ch::Channel2 => &mut self.pyro_channel_b,
                 };
-                pin.set_high();
-                Timer::after_micros(100).await;
-                pin.set_low();
+                pyro_channel.fire();
+                Timer::after_millis(400).await;
+                pyro_channel.reset();
             }
         }
     }
     async fn send_state(&mut self) {
         let mut state_bitmap = StateFlags::empty();
-        state_bitmap.set(StateFlags::SAFE_A, self.safe_a.is_set_low());
+        state_bitmap.set(StateFlags::SAFE_A, self.pyro_channel_a.is_armed());
 
-        state_bitmap.set(StateFlags::SAFE_B, self.safe_b.is_set_low());
+        state_bitmap.set(StateFlags::FIRE_A, self.pyro_channel_a.is_fired());
+        
+        state_bitmap.set(StateFlags::SAFE_B, self.pyro_channel_b.is_armed());
 
-        state_bitmap.set(StateFlags::FIRE_A, self.fire_a.is_set_high());
+        state_bitmap.set(StateFlags::FIRE_B, self.pyro_channel_b.is_fired());
 
-        state_bitmap.set(StateFlags::FIRE_B, self.fire_b.is_set_high());
-
-        let container = PyroTMContainer::new(&tm::Status, &state_bitmap.bits()).unwrap();
+        let container = PyroChellUnion::new(&tm::Status, &state_bitmap.bits()).unwrap();
         self.tm_sender.send(container).await;
     }
     pub async fn run(&mut self) -> ! {
