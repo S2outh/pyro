@@ -33,13 +33,19 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 use south_common::{
-    chell::ChellDefinition, configs::can_config::CanPeriphConfig, definitions::{internal_msgs, telemetry::pyro as tm}, gen_obdh_types, obdh::EmptyFunc, types::pyro::PyroCommand
+    chell::ChellDefinition,
+    configs::can_config::CanPeriphConfig,
+    definitions::{internal_msgs, telemetry::pyro as tm},
+    gen_obdh_types,
+    obdh::EmptyFunc,
+    types::pyro::PyroCommand,
 };
 use static_cell::StaticCell;
 
 use crate::{
     adc::{AdcCtrl, AdcCtrlChannel, Averaging},
-    control_loop::ControlLoop, pyro_channel::PyroChannel,
+    control_loop::ControlLoop,
+    pyro_channel::PyroChannel,
 };
 
 use {defmt_rtt as _, panic_probe as _};
@@ -103,11 +109,12 @@ static C_RX_BUF: StaticCell<RxFdBuf<C_RX_BUF_SIZE>> = StaticCell::new();
 static C_TX_BUF: StaticCell<TxFdBuf<C_TX_BUF_SIZE>> = StaticCell::new();
 
 // ADC watch channels
-static TEMP_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
-static OUT_A_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
-static OUT_B_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
-static BAT_A_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
-static BAT_B_WATCH: Watch<ThreadModeRawMutex, i16, 1> = Watch::new();
+type AdcWatch = Watch<ThreadModeRawMutex, i16, 1>;
+static TEMP_WATCH: AdcWatch = Watch::new();
+static OUT_A_WATCH: AdcWatch = Watch::new();
+static OUT_B_WATCH: AdcWatch = Watch::new();
+static BAT_A_WATCH: AdcWatch = Watch::new();
+static BAT_B_WATCH: AdcWatch = Watch::new();
 
 #[embassy_executor::task]
 async fn petter(mut watchdog: IndependentWatchdog<'static, IWDG>) {
@@ -205,25 +212,25 @@ async fn main(spawner: Spawner) {
     // Adc configuration
     let out_a_channel = AdcCtrlChannel::new(
         p.PA1.degrade_adc(),
-        OUT_A_WATCH.sender().as_dyn(),
+        OUT_A_WATCH.dyn_sender(),
         adc::conversion::calculate_out_voltage_mv,
     );
 
     let out_b_channel = AdcCtrlChannel::new(
         p.PA0.degrade_adc(),
-        OUT_B_WATCH.sender().as_dyn(),
+        OUT_B_WATCH.dyn_sender(),
         adc::conversion::calculate_out_voltage_mv,
     );
 
     let bat_a_channel = AdcCtrlChannel::new(
         p.PA3.degrade_adc(),
-        BAT_A_WATCH.sender().as_dyn(),
+        BAT_A_WATCH.dyn_sender(),
         adc::conversion::calculate_bat_voltage_mv,
     );
 
     let bat_b_channel = AdcCtrlChannel::new(
         p.PA2.degrade_adc(),
-        BAT_B_WATCH.sender().as_dyn(),
+        BAT_B_WATCH.dyn_sender(),
         adc::conversion::calculate_bat_voltage_mv,
     );
 
@@ -234,10 +241,10 @@ async fn main(spawner: Spawner) {
     // dma triggers when buffer is half full:
     // trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (14 / 2) = 464.024 ms
     //
-    // alt. (every second) trigger = total cycle time * (adc buf size multiplier / 2) = 66.432 * (30 / 2) = 996.48 ms
+    // alt. (every second) trigger = 66.432 * (30 / 2) = 996.48 ms
     //
     // The adc is in continuous trigger mode and will not pause between reads
-    // The adc ctrl loop software averages the values read on interrupt
+    // The adc ctrl loop software averages the v/alues read on interrupt
 
     let adc: AdcCtrl<'_, '_, _, ADC_NUM_CHANNELS, { ADC_BUF_SIZE / 2 }> = AdcCtrl::new(
         p.ADC1,
@@ -247,7 +254,7 @@ async fn main(spawner: Spawner) {
         Resolution::BITS12,
         Averaging::Samples256,
         SampleTime::CYCLES160_5,
-        TEMP_WATCH.sender().as_dyn(),
+        TEMP_WATCH.dyn_sender(),
         [out_a_channel, out_b_channel, bat_a_channel, bat_b_channel],
     );
 

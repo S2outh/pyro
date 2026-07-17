@@ -1,6 +1,5 @@
 use embassy_stm32::gpio::Output;
 
-
 pub struct PyroChannel {
     safe: Output<'static>,
     fire: Output<'static>,
@@ -8,10 +7,7 @@ pub struct PyroChannel {
 }
 
 impl PyroChannel {
-    pub fn new(
-        safe: Output<'static>,
-        fire: Output<'static>,
-    ) -> Self {
+    pub fn new(safe: Output<'static>, fire: Output<'static>) -> Self {
         Self {
             safe,
             fire,

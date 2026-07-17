@@ -9,7 +9,8 @@ use util::Sortable;
 use embassy_stm32::{
     Peri,
     adc::{
-        Adc, AdcChannel, AdcConfig, AnyAdcChannel, CONTINUOUS, Exten, Instance, Ovsr, Ovss, Resolution, RingBufferedAdc, RxDma, SampleTime
+        Adc, AdcChannel, AdcConfig, AnyAdcChannel, CONTINUOUS, Exten, Instance, Ovsr, Ovss,
+        Resolution, RingBufferedAdc, RxDma, SampleTime,
     },
     dma::InterruptHandler,
     interrupt::typelevel::Binding,
@@ -81,8 +82,7 @@ pub mod conversion {
         let temp_measurement = measurement as i64;
         let temp_calibrated_measurement = temp_measurement * vref_mv / VREF_CALIB_MV;
         let calib = CALIB.get();
-        let temp_tenth_deg = TS_REL_VAL_TENTH_DEG
-            * (temp_calibrated_measurement - calib.ts_cal_1)
+        let temp_tenth_deg = TS_REL_VAL_TENTH_DEG * (temp_calibrated_measurement - calib.ts_cal_1)
             / calib.ts_cal_rel
             + TS_1_VAL_TENTH_DEG;
         temp_tenth_deg as i16
@@ -177,7 +177,7 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
         adc_config.oversampling_ratio = Some(averaging.oversampeling_ratio()); // oversampling steps
         adc_config.oversampling_shift = Some(averaging.oversampeling_shift()); // right shift of oversampling reg
         adc_config.oversampling_enable = Some(true); // enable oversampling feature
-        
+
         let adc = Adc::new_with_config(adc_periph, adc_config);
 
         let temp_channel = AdcCtrlChannel::new(
