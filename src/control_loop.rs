@@ -53,11 +53,11 @@ impl ControlLoop {
     }
     async fn send_state(&mut self) {
         let mut state_bitmap = StateFlags::empty();
-        state_bitmap.set(StateFlags::SAFE_A, self.pyro_channel_a.is_armed());
+        state_bitmap.set(StateFlags::ARMD_A, self.pyro_channel_a.is_armed());
 
         state_bitmap.set(StateFlags::FIRE_A, self.pyro_channel_a.is_fired());
 
-        state_bitmap.set(StateFlags::SAFE_B, self.pyro_channel_b.is_armed());
+        state_bitmap.set(StateFlags::ARMD_B, self.pyro_channel_b.is_armed());
 
         state_bitmap.set(StateFlags::FIRE_B, self.pyro_channel_b.is_fired());
 
