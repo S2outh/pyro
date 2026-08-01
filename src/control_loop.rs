@@ -47,6 +47,7 @@ impl ControlLoop {
                 pyro_channel.reset();
             }
         }
+        self.send_state().await;
     }
     async fn send_state(&mut self) {
         let mut state_bitmap = StateFlags::empty();
