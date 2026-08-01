@@ -32,7 +32,7 @@ use embassy_time::Timer;
 use south_common::{
     chell::ChellDefinition,
     configs::can_config::CanPeriphConfig,
-    definitions::{internal_msgs, telemetry::pyro as tm},
+    definitions::telemetry::pyro as tm,
     gen_obdh_types,
     obdh::EmptyFunc,
     types::pyro::PyroCommand,
@@ -148,14 +148,14 @@ pub async fn ctrl_thread(mut control_loop: ControlLoop) -> ! {
 // adc to telem conversion tasks
 #[embassy_executor::task(pool_size = 5)]
 pub async fn adc_telem_thread(
-    tm_sender: PyroTMSender,
+    com_channels: &'static PyroComChannels,
     mut adc_recv: watch::Receiver<'static, ThreadModeRawMutex, i16, 1>,
     addr: &'static dyn ChellDefinition,
 ) {
     loop {
         let value = adc_recv.changed().await;
         let container = PyroChellUnion::new(addr, &value).unwrap();
-        tm_sender.send(container).await;
+        com_channels.send_tm(container).await;
     }
 }
 
@@ -175,19 +175,15 @@ async fn main(spawner: Spawner) {
 
     // -- CAN configuration
     // can 1 configuration
-    let mut can_configurator =
+    let can_configurator =
         CanPeriphConfig::new(CanConfigurator::new(p.FDCAN1, p.PA11, p.PA12, Irqs));
 
     // can 2 configuration
-    // let mut can_configurator =
+    // let can_configurator =
     //     CanPeriphConfig::new(CanConfigurator::new(p.FDCAN2, p.PB0, p.PB1, Irqs));
 
     let _can_1_standby = Output::new(p.PA10, Level::Low, Speed::Low);
     // let _can_2_standby = Output::new(p.PB2, Level::Low, Speed::Low);
-
-    can_configurator
-        .add_receive_topic(internal_msgs::Telecommand.id())
-        .unwrap();
 
     let can_instance = can_configurator.activate(
         C_TX_BUF.init(TxFdBuf::<C_TX_BUF_SIZE>::new()),
@@ -260,8 +256,7 @@ async fn main(spawner: Spawner) {
     let pyro_channel_b = PyroChannel::new(safe_b, fire_b);
 
     let control_loop = ControlLoop::spawn(
-        COM_CHANNELS.get_tc_receiver(),
-        COM_CHANNELS.get_tm_sender(),
+        &COM_CHANNELS,
         pyro_channel_a,
         pyro_channel_b,
     );
@@ -281,7 +276,7 @@ async fn main(spawner: Spawner) {
     // adc telem threads
     spawner.spawn(
         adc_telem_thread(
-            COM_CHANNELS.get_tm_sender(),
+            &COM_CHANNELS,
             TEMP_WATCH.receiver().unwrap(),
             &tm::InternalTemperature,
         )
@@ -290,7 +285,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            COM_CHANNELS.get_tm_sender(),
+            &COM_CHANNELS,
             BAT_A_WATCH.receiver().unwrap(),
             &tm::Bat1Voltage,
         )
@@ -299,7 +294,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            COM_CHANNELS.get_tm_sender(),
+            &COM_CHANNELS,
             BAT_B_WATCH.receiver().unwrap(),
             &tm::Bat2Voltage,
         )
@@ -308,7 +303,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            COM_CHANNELS.get_tm_sender(),
+            &COM_CHANNELS,
             OUT_A_WATCH.receiver().unwrap(),
             &tm::Out1Voltage,
         )
@@ -317,7 +312,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(
         adc_telem_thread(
-            COM_CHANNELS.get_tm_sender(),
+            &COM_CHANNELS,
             OUT_B_WATCH.receiver().unwrap(),
             &tm::Out2Voltage,
         )

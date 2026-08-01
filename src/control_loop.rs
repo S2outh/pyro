@@ -5,25 +5,22 @@ use south_common::definitions::telemetry::pyro as tm;
 use south_common::types::pyro::{PyroChannel as Ch, PyroCommand, StateFlags};
 
 use crate::pyro_channel::PyroChannel;
-use crate::{PyroChellUnion, PyroTCReceiver, PyroTMSender};
+use crate::{PyroChellUnion, PyroComChannels};
 
 pub struct ControlLoop {
-    cmd_receiver: PyroTCReceiver,
-    tm_sender: PyroTMSender,
+    com_channel: &'static PyroComChannels,
     pyro_channel_a: PyroChannel,
     pyro_channel_b: PyroChannel,
 }
 
 impl ControlLoop {
     pub fn spawn(
-        cmd_receiver: PyroTCReceiver,
-        tm_sender: PyroTMSender,
+        com_channel: &'static PyroComChannels,
         pyro_channel_a: PyroChannel,
         pyro_channel_b: PyroChannel,
     ) -> Self {
         Self {
-            cmd_receiver,
-            tm_sender,
+            com_channel,
             pyro_channel_a,
             pyro_channel_b,
         }
@@ -62,14 +59,14 @@ impl ControlLoop {
         state_bitmap.set(StateFlags::FIRE_B, self.pyro_channel_b.is_fired());
 
         let container = PyroChellUnion::new(&tm::Status, &state_bitmap.bits()).unwrap();
-        self.tm_sender.send(container).await;
+        self.com_channel.send_tm(container).await;
     }
     pub async fn run(&mut self) -> ! {
         const CTRL_LOOP_TM_INTERVAL: Duration = Duration::from_millis(500);
         let mut tm_ticker = Ticker::every(CTRL_LOOP_TM_INTERVAL);
 
         loop {
-            match select(tm_ticker.next(), self.cmd_receiver.receive()).await {
+            match select(tm_ticker.next(), self.com_channel.receive_tc()).await {
                 Either::First(()) => self.send_state().await,
                 Either::Second(cmd) => self.handle_cmd(cmd).await,
             }
