@@ -1,5 +1,5 @@
 use embassy_futures::select::{Either, select};
-use embassy_time::{Duration, Ticker, Timer};
+use embassy_time::{Duration, Ticker};
 use south_common::definitions::telemetry::pyro as tm;
 
 use south_common::types::pyro::{PyroChannel as Ch, PyroCommand, StateFlags};
@@ -28,24 +28,21 @@ impl ControlLoop {
 
     async fn handle_cmd(&mut self, cmd: PyroCommand) {
         match cmd {
+
             PyroCommand::Arm(channel) => match channel {
                 Ch::Channel1 => self.pyro_channel_a.arm(),
                 Ch::Channel2 => self.pyro_channel_b.arm(),
             },
+
             PyroCommand::Disarm(channel) => match channel {
                 Ch::Channel1 => self.pyro_channel_a.disarm(),
                 Ch::Channel2 => self.pyro_channel_b.disarm(),
             },
 
-            PyroCommand::Fire(channel) => {
-                let pyro_channel = match channel {
-                    Ch::Channel1 => &mut self.pyro_channel_a,
-                    Ch::Channel2 => &mut self.pyro_channel_b,
-                };
-                pyro_channel.fire();
-                Timer::after_millis(400).await;
-                pyro_channel.reset();
-            }
+            PyroCommand::Fire(channel) => match channel {
+                Ch::Channel1 => self.pyro_channel_a.fire().await,
+                Ch::Channel2 => self.pyro_channel_b.fire().await,
+            },
         }
         self.send_state().await;
     }
