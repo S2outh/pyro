@@ -63,21 +63,24 @@ bind_interrupts!(struct Irqs {
 /// all messages can be received without package drop
 fn get_rcc_config() -> rcc::Config {
     let mut rcc_config = rcc::Config::default();
-    // 16 MHz
     rcc_config.hsi = Some(rcc::Hsi {
         sys_div: rcc::HsiSysDiv::DIV1,
-    });
+    }); // 16 MHz
     rcc_config.pll = Some(rcc::Pll {
-        source: rcc::PllSource::HSI,     // 16 MHz
-        prediv: rcc::PllPreDiv::DIV1,    // 16 MHz
-        mul: rcc::PllMul::MUL8,          // 128 MHz
+        source: rcc::PllSource::HSI,
+        prediv: rcc::PllPreDiv::DIV1, // 16 MHz
+        mul: rcc::PllMul::MUL8, // 128 MHz
         divp: Some(rcc::PllPDiv::DIV32), // 4 MHz
-        divq: Some(rcc::PllQDiv::DIV2),  // 64 MHz
-        divr: Some(rcc::PllRDiv::DIV2),  // 64 MHz
+        divq: Some(rcc::PllQDiv::DIV2), // 64 MHz
+        divr: Some(rcc::PllRDiv::DIV2), // 64 MHz
     });
-    rcc_config.sys = rcc::Sysclk::PLL1_R; // 64 MHz
-    rcc_config.mux.fdcansel = Fdcansel::PLL1_Q; // 64 MHz
-    rcc_config.mux.adcsel = Adcsel::PLL1_P; // 4 MHz
+    rcc_config.sys = rcc::Sysclk::PLL1_R; // cpu runns with 64 MHz
+    // fdcan_tq_ck (64 MHz) must stay <= fdcan_pclk, i.e. apb1 (64 MHz)
+    rcc_config.mux.fdcansel = Fdcansel::PLL1_Q; // can runns with 64 MHz
+    rcc_config.mux.adcsel = Adcsel::PLL1_P; // ADC runns with 4 MHz
+    
+    rcc_config.ahb_pre = rcc::AHBPrescaler::DIV1; // 64 MHz
+    rcc_config.apb1_pre = rcc::APBPrescaler::DIV1; // 64 MHz
     rcc_config
 }
 
