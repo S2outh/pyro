@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)] // required by `embassy_executor::task` with the `nightly` feature
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 
 mod adc;
 mod control_loop;

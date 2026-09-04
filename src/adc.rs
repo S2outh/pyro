@@ -155,7 +155,7 @@ pub struct AdcCtrl<
 impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES_SZE: usize>
     AdcCtrl<'a, 'c, T, CHANNELS, MES_SZE>
 {
-    pub fn new<D: RxDma<T>>(
+    pub fn new<D: RxDma<T>, const EXT_CHANNELS: usize>(
         adc_periph: Peri<'a, T>,
         dma_channel: Peri<'a, D>,
         dma_buffer: &'a mut [u16],
@@ -164,8 +164,13 @@ impl<'a, 'c, T: Instance<Regs = pac::adc::Adc>, const CHANNELS: usize, const MES
         averaging: Averaging,
         sample_time: SampleTime,
         temp_sender: DynSender<'c, i16>,
-        external_channels: [AdcCtrlChannel<'c, T>; CHANNELS - 2],
+        external_channels: [AdcCtrlChannel<'c, T>; EXT_CHANNELS],
     ) -> Self {
+        assert_eq!(
+            EXT_CHANNELS,
+            CHANNELS - 2,
+            "Number of external channels should be total channels - 2"
+        );
         assert_eq!(
             MES_SZE * 2,
             dma_buffer.len(),
